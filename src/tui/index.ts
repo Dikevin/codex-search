@@ -62,6 +62,7 @@ interface TuiSearchModel {
 interface DetailSearchState {
   active: boolean;
   query: string;
+  cursor: number;
   lastQuery: string;
 }
 
@@ -69,6 +70,7 @@ interface GlobalSearchState {
   active: boolean;
   home: boolean;
   query: string;
+  cursor: number;
 }
 
 interface FilterPickerState {
@@ -161,12 +163,14 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
   let detailSearch: DetailSearchState = {
     active: false,
     query: "",
+    cursor: 0,
     lastQuery: "",
   };
   let globalSearch: GlobalSearchState = {
     active: currentQuery.trim() === "",
     home: currentQuery.trim() === "",
     query: currentQuery,
+    cursor: currentQuery.length,
   };
   let filterPicker: FilterPickerState = {
     active: false,
@@ -348,9 +352,9 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
       cwdLabel: currentCwdLabel,
       progress: currentSearch.searchState?.progress ?? null,
       prompt: detailSearch.active
-        ? `detail> ${detailSearch.query}`
+        ? renderInputPrompt("detail> ", detailSearch.query, detailSearch.cursor)
         : globalSearch.active
-          ? `search> ${globalSearch.query}`
+          ? renderInputPrompt("search> ", globalSearch.query, globalSearch.cursor)
           : null,
       searchHint: detailSearch.active
         ? "detail-search"
@@ -452,12 +456,14 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
     detailSearch = {
       active: false,
       query: "",
+      cursor: 0,
       lastQuery: detailSearch.lastQuery,
     };
     globalSearch = {
       active: false,
       home: false,
       query: currentQuery,
+      cursor: currentQuery.length,
     };
     filterPicker = {
       active: false,
@@ -587,6 +593,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
     globalSearch = {
       ...globalSearch,
       query,
+      cursor: query.length,
     };
     searchAssist = {
       ...searchAssist,
@@ -594,6 +601,63 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
       selectedIndex: 0,
     };
     state = clearStatus(state);
+    refreshSearchAssist();
+  };
+  const updateGlobalSearchInput = (next: Pick<GlobalSearchState, "query" | "cursor">) => {
+    globalSearch = {
+      ...globalSearch,
+      query: next.query,
+      cursor: clamp(next.cursor, 0, next.query.length),
+    };
+    searchAssist = {
+      ...searchAssist,
+      selection: "input",
+      selectedIndex: 0,
+    };
+    state = clearStatus(state);
+    refreshSearchAssist();
+  };
+  const updateDetailSearchInput = (next: Pick<DetailSearchState, "query" | "cursor">) => {
+    detailSearch = {
+      ...detailSearch,
+      query: next.query,
+      cursor: clamp(next.cursor, 0, next.query.length),
+    };
+  };
+  const returnToHome = async () => {
+    await disposeSearchSession(currentSearch);
+    searchGeneration += 1;
+    currentSearch = createActiveSearchSession({
+      query: "",
+      caseSensitive: filters.caseSensitive,
+      results: emptySearchResults(),
+    });
+    currentQuery = "";
+    currentCaseSensitive = filters.caseSensitive;
+    currentCwdLabel = undefined;
+    model = createTuiSearchModel([], true);
+    state = clearStatus(createInitialTuiState());
+    detailSearch = {
+      active: false,
+      query: "",
+      cursor: 0,
+      lastQuery: detailSearch.lastQuery,
+    };
+    globalSearch = {
+      active: true,
+      home: true,
+      query: "",
+      cursor: 0,
+    };
+    filterPicker = {
+      active: false,
+      selected: 0,
+      mode: "rows",
+      draftFilters: filters,
+      valueOptions: [],
+      valueSelected: 0,
+    };
+    pendingSearch = null;
     refreshSearchAssist();
   };
 
@@ -682,7 +746,12 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
         }
 
         if (key.name === "escape") {
-          detailSearch = { ...detailSearch, active: false, query: "" };
+          detailSearch = {
+            ...detailSearch,
+            active: false,
+            query: "",
+            cursor: 0,
+          };
           state = clearStatus(state);
           armInput();
           clearScheduledRender();
@@ -690,11 +759,88 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
           continue;
         }
 
+        if (key.ctrl && key.name === "a") {
+          updateDetailSearchInput(moveCursorToStart(detailSearch.query));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.ctrl && key.name === "e") {
+          updateDetailSearchInput(moveCursorToEnd(detailSearch.query));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.ctrl && key.name === "u") {
+          updateDetailSearchInput(deleteToStart(detailSearch.query, detailSearch.cursor));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.ctrl && key.name === "k") {
+          updateDetailSearchInput(deleteToEnd(detailSearch.query, detailSearch.cursor));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.ctrl && key.name === "w") {
+          updateDetailSearchInput(deleteWordBackward(detailSearch.query, detailSearch.cursor));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "left") {
+          updateDetailSearchInput(
+            key.meta ? moveCursorWordLeft(detailSearch.query, detailSearch.cursor) : moveCursor(detailSearch.query, detailSearch.cursor, -1),
+          );
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "right") {
+          updateDetailSearchInput(
+            key.meta ? moveCursorWordRight(detailSearch.query, detailSearch.cursor) : moveCursor(detailSearch.query, detailSearch.cursor, 1),
+          );
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "home" || (key.meta && key.name === "b")) {
+          updateDetailSearchInput(moveCursorToStart(detailSearch.query));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "end" || (key.meta && key.name === "f")) {
+          updateDetailSearchInput(moveCursorToEnd(detailSearch.query));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
         if (key.name === "backspace" || key.name === "delete") {
-          detailSearch = {
-            ...detailSearch,
-            query: detailSearch.query.slice(0, -1),
-          };
+          updateDetailSearchInput(
+            key.name === "backspace"
+              ? deleteBackward(detailSearch.query, detailSearch.cursor)
+              : deleteForward(detailSearch.query, detailSearch.cursor),
+          );
           armInput();
           clearScheduledRender();
           render();
@@ -704,7 +850,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
         if (key.name === "return") {
           detailSearch = { ...detailSearch, active: false };
           if (!expanded || detailSearch.query.trim() === "") {
-            detailSearch = { ...detailSearch, query: "" };
+            detailSearch = { ...detailSearch, query: "", cursor: 0 };
             state = clearStatus(state);
           } else {
             const query = detailSearch.query.trim();
@@ -722,6 +868,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
               detailSearch = {
                 active: false,
                 query: "",
+                cursor: 0,
                 lastQuery: query,
               };
               state = clearStatus({
@@ -741,10 +888,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
         }
 
         if (isPrintableInput(inputEvent.text, key)) {
-          detailSearch = {
-            ...detailSearch,
-            query: `${detailSearch.query}${inputEvent.text}`,
-          };
+          updateDetailSearchInput(insertText(detailSearch.query, detailSearch.cursor, inputEvent.text));
           armInput();
           clearScheduledRender();
           render();
@@ -885,6 +1029,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
             active: false,
             home: false,
             query: currentQuery,
+            cursor: currentQuery.length,
           };
           searchAssist = {
             ...createSearchAssistState(options.historyEnabled ?? true),
@@ -897,7 +1042,83 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
           continue;
         }
 
-        if (key.name === "up" || key.name === "k") {
+        if (key.ctrl && key.name === "a") {
+          updateGlobalSearchInput(moveCursorToStart(globalSearch.query));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.ctrl && key.name === "e") {
+          updateGlobalSearchInput(moveCursorToEnd(globalSearch.query));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.ctrl && key.name === "u") {
+          updateGlobalSearchInput(deleteToStart(globalSearch.query, globalSearch.cursor));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.ctrl && key.name === "k") {
+          updateGlobalSearchInput(deleteToEnd(globalSearch.query, globalSearch.cursor));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.ctrl && key.name === "w") {
+          updateGlobalSearchInput(deleteWordBackward(globalSearch.query, globalSearch.cursor));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "left") {
+          updateGlobalSearchInput(
+            key.meta ? moveCursorWordLeft(globalSearch.query, globalSearch.cursor) : moveCursor(globalSearch.query, globalSearch.cursor, -1),
+          );
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "right") {
+          updateGlobalSearchInput(
+            key.meta ? moveCursorWordRight(globalSearch.query, globalSearch.cursor) : moveCursor(globalSearch.query, globalSearch.cursor, 1),
+          );
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "home" || (key.meta && key.name === "b")) {
+          updateGlobalSearchInput(moveCursorToStart(globalSearch.query));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "end" || (key.meta && key.name === "f")) {
+          updateGlobalSearchInput(moveCursorToEnd(globalSearch.query));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "up") {
           if (assistItems.length > 0) {
             searchAssist = {
               ...searchAssist,
@@ -913,7 +1134,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
           continue;
         }
 
-        if (key.name === "down" || key.name === "j") {
+        if (key.name === "down") {
           if (assistItems.length > 0) {
             searchAssist = {
               ...searchAssist,
@@ -959,7 +1180,11 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
         }
 
         if (key.name === "backspace" || key.name === "delete") {
-          updateGlobalSearchQuery(globalSearch.query.slice(0, -1));
+          updateGlobalSearchInput(
+            key.name === "backspace"
+              ? deleteBackward(globalSearch.query, globalSearch.cursor)
+              : deleteForward(globalSearch.query, globalSearch.cursor),
+          );
           armInput();
           clearScheduledRender();
           render();
@@ -993,7 +1218,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
           continue;
         }
 
-        if (key.name === "f") {
+        if (key.ctrl && key.name === "f") {
           openFilterPicker();
           armInput();
           clearScheduledRender();
@@ -1002,7 +1227,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
         }
 
         if (isPrintableInput(inputEvent.text, key)) {
-          updateGlobalSearchQuery(`${globalSearch.query}${inputEvent.text}`);
+          updateGlobalSearchInput(insertText(globalSearch.query, globalSearch.cursor, inputEvent.text));
           armInput();
           clearScheduledRender();
           render();
@@ -1019,14 +1244,22 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
           continue;
         }
 
-        if (key.name === "q" || key.name === "escape" || key.name === "return" || (key.ctrl && key.name === "c")) {
+        if (key.name === "q" || key.name === "return" || (key.ctrl && key.name === "c")) {
           return 0;
+        }
+        if (key.name === "escape") {
+          await returnToHome();
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
         }
         if (key.name === "s") {
           globalSearch = {
             active: true,
             home: false,
             query: currentQuery,
+            cursor: currentQuery.length,
           };
           searchAssist = {
             ...searchAssist,
@@ -1054,8 +1287,16 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
         return 0;
       }
 
-      if (key.name === "escape" || key.name === "q") {
+      if (key.name === "q") {
         return 0;
+      }
+
+      if (key.name === "escape") {
+        await returnToHome();
+        armInput();
+        clearScheduledRender();
+        render();
+        continue;
       }
 
       if (key.ctrl && key.name === "o") {
@@ -1108,8 +1349,44 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
           continue;
         }
 
-        await finish();
-        return hit ? resumeHit(hit) : 0;
+        if (!hit) {
+          armInput();
+          continue;
+        }
+
+        const sourceLabel = currentSearch.sourceLabel;
+        const rangeLabel = currentSearch.rangeLabel;
+        const cwdLabel = currentCwdLabel;
+        await disposeSearchSession(currentSearch);
+        model.searchDone = true;
+        searchGeneration += 1;
+        currentSearch = createActiveSearchSession({
+          query: currentQuery,
+          caseSensitive: currentCaseSensitive,
+          results: getResults(),
+          sourceLabel,
+          rangeLabel,
+          cwdLabel,
+        });
+        pendingSearch = null;
+
+        try {
+          const resumeExitCode = await withSuspendedTerminal(
+            stdin,
+            stdout,
+            async () => resumeHit(hit),
+          );
+          state = resumeExitCode === 0
+            ? clearStatus(state)
+            : withStatus(state, `codex resume exited with code ${resumeExitCode}.`);
+        } catch (error) {
+          state = withStatus(state, error instanceof Error ? error.message : "codex resume failed.");
+        }
+
+        armInput();
+        clearScheduledRender();
+        render();
+        continue;
       }
 
       if (key.name === "s") {
@@ -1117,6 +1394,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
           active: true,
           home: false,
           query: currentQuery,
+          cursor: currentQuery.length,
         };
         searchAssist = {
           ...searchAssist,
@@ -1167,6 +1445,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
           ...detailSearch,
           active: true,
           query: "",
+          cursor: 0,
         };
         armInput();
         clearScheduledRender();
@@ -1714,6 +1993,134 @@ function isPrintableInput(text: string, key: readline.Key): boolean {
   );
 }
 
+function emptySearchResults(): SearchResultsPage {
+  return {
+    hits: [],
+    page: 1,
+    pageSize: 5,
+    offset: 0,
+    hasMore: false,
+  };
+}
+
+function renderInputPrompt(prefix: string, query: string, cursor: number): string {
+  const clampedCursor = clamp(cursor, 0, query.length);
+  const before = query.slice(0, clampedCursor);
+  const current = query[clampedCursor] ?? " ";
+  const after = query.slice(clampedCursor + (clampedCursor < query.length ? 1 : 0));
+  return `${prefix}${before}${ANSI.inverse}${current}${ANSI.reset}${after}`;
+}
+
+function insertText(query: string, cursor: number, text: string): { query: string; cursor: number } {
+  const clampedCursor = clamp(cursor, 0, query.length);
+  return {
+    query: `${query.slice(0, clampedCursor)}${text}${query.slice(clampedCursor)}`,
+    cursor: clampedCursor + text.length,
+  };
+}
+
+function deleteBackward(query: string, cursor: number): { query: string; cursor: number } {
+  const clampedCursor = clamp(cursor, 0, query.length);
+  if (clampedCursor === 0) {
+    return { query, cursor: clampedCursor };
+  }
+
+  return {
+    query: `${query.slice(0, clampedCursor - 1)}${query.slice(clampedCursor)}`,
+    cursor: clampedCursor - 1,
+  };
+}
+
+function deleteForward(query: string, cursor: number): { query: string; cursor: number } {
+  const clampedCursor = clamp(cursor, 0, query.length);
+  if (clampedCursor >= query.length) {
+    return { query, cursor: clampedCursor };
+  }
+
+  return {
+    query: `${query.slice(0, clampedCursor)}${query.slice(clampedCursor + 1)}`,
+    cursor: clampedCursor,
+  };
+}
+
+function deleteToStart(query: string, cursor: number): { query: string; cursor: number } {
+  const clampedCursor = clamp(cursor, 0, query.length);
+  return {
+    query: query.slice(clampedCursor),
+    cursor: 0,
+  };
+}
+
+function deleteToEnd(query: string, cursor: number): { query: string; cursor: number } {
+  const clampedCursor = clamp(cursor, 0, query.length);
+  return {
+    query: query.slice(0, clampedCursor),
+    cursor: clampedCursor,
+  };
+}
+
+function deleteWordBackward(query: string, cursor: number): { query: string; cursor: number } {
+  let nextCursor = clamp(cursor, 0, query.length);
+  if (nextCursor === 0) {
+    return { query, cursor: nextCursor };
+  }
+
+  while (nextCursor > 0 && /\s/.test(query[nextCursor - 1] ?? "")) {
+    nextCursor -= 1;
+  }
+  while (nextCursor > 0 && !/\s/.test(query[nextCursor - 1] ?? "")) {
+    nextCursor -= 1;
+  }
+
+  return {
+    query: `${query.slice(0, nextCursor)}${query.slice(clamp(cursor, 0, query.length))}`,
+    cursor: nextCursor,
+  };
+}
+
+function moveCursor(query: string, cursor: number, delta: number): { query: string; cursor: number } {
+  return {
+    query,
+    cursor: clamp(cursor + delta, 0, query.length),
+  };
+}
+
+function moveCursorToStart(query: string): { query: string; cursor: number } {
+  return {
+    query,
+    cursor: 0,
+  };
+}
+
+function moveCursorToEnd(query: string): { query: string; cursor: number } {
+  return {
+    query,
+    cursor: query.length,
+  };
+}
+
+function moveCursorWordLeft(query: string, cursor: number): { query: string; cursor: number } {
+  let nextCursor = clamp(cursor, 0, query.length);
+  while (nextCursor > 0 && /\s/.test(query[nextCursor - 1] ?? "")) {
+    nextCursor -= 1;
+  }
+  while (nextCursor > 0 && !/\s/.test(query[nextCursor - 1] ?? "")) {
+    nextCursor -= 1;
+  }
+  return { query, cursor: nextCursor };
+}
+
+function moveCursorWordRight(query: string, cursor: number): { query: string; cursor: number } {
+  let nextCursor = clamp(cursor, 0, query.length);
+  while (nextCursor < query.length && /\s/.test(query[nextCursor] ?? "")) {
+    nextCursor += 1;
+  }
+  while (nextCursor < query.length && !/\s/.test(query[nextCursor] ?? "")) {
+    nextCursor += 1;
+  }
+  return { query, cursor: nextCursor };
+}
+
 async function cleanupTerminal(
   stdin: NodeJS.ReadStream,
   stdout: NodeJS.WriteStream,
@@ -1722,6 +2129,23 @@ async function cleanupTerminal(
   stdin.setRawMode?.(Boolean(previousRawMode));
   stdin.pause();
   stdout.write(`${ANSI.reset}${ANSI.showCursor}${ANSI.altOff}`);
+}
+
+async function withSuspendedTerminal<T>(
+  stdin: NodeJS.ReadStream,
+  stdout: NodeJS.WriteStream,
+  action: () => Promise<T>,
+): Promise<T> {
+  stdin.setRawMode?.(false);
+  stdout.write(`${ANSI.reset}${ANSI.showCursor}${ANSI.altOff}`);
+
+  try {
+    return await action();
+  } finally {
+    stdout.write(`${ANSI.altOn}${ANSI.hideCursor}`);
+    stdin.setRawMode?.(true);
+    stdin.resume();
+  }
 }
 
 function writeFrame(stdout: NodeJS.WriteStream, screen: string): void {

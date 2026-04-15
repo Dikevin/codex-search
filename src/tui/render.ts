@@ -30,7 +30,7 @@ import {
 } from "./text.js";
 import type { RenderSearchTuiScreenOptions, TuiState } from "./types.js";
 import type { SearchProgress } from "../search/view-filter.js";
-import { getTuiFilterRows } from "./search-filters.js";
+import { createDefaultTuiFilters, getTuiFilterRows } from "./search-filters.js";
 
 interface SessionColumn {
   key: "time" | "source" | "title" | "matches" | "cwd";
@@ -187,10 +187,7 @@ function renderFilterPickerOverlayLines(
   picker: NonNullable<RenderSearchTuiScreenOptions["filterPicker"]>,
 ): string[] {
   const rows = picker.rows.length > 0 ? picker.rows : getTuiFilterRows({
-    sourceMode: "active",
-    view: "useful",
-    caseSensitive: false,
-    timeFilter: { kind: "recent", value: "30d" },
+    ...createDefaultTuiFilters(),
   });
   const labelWidth = Math.max(...rows.map((row) => row.label.length), 6);
   if (picker.mode === "values") {
@@ -721,8 +718,8 @@ function renderHintBar(
         formatKey("Enter"), " search",
         searchAssist?.previews.length ? `  ${formatKey("1-5")} open` : `  ${formatKey("^O")} lucky`,
         "  ", formatKey("Tab"), " accept",
-        "  ", formatKey("f"), " filters",
-        "  ", formatKey("Esc"), home?.active ? "quit" : "cancel",
+        "  ", formatKey("^F"), " filters",
+        "  ", formatKey("Esc"), home?.active ? " quit" : " cancel",
       ].join("")
       : [
         formatKey("Enter"), " find",

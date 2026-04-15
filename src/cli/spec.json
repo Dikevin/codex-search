@@ -52,7 +52,8 @@
         "codexs lucky <keyword>",
         "codexs <keyword> --json [json-flags]",
         "codexs <keyword> --jsonl",
-        "codexs -- <keyword-starting-with-dash>"
+        "codexs -- <keyword-starting-with-dash>",
+        "codexs history [--json|clear|enable|disable]"
       ],
       "usageErrors": {
         "default": "codexs <keyword> [search-flags] [--json|--jsonl]"
@@ -83,13 +84,7 @@
     {
       "name": "history",
       "flags": ["--json", "--root-dir"],
-      "helpUsages": [
-        "codexs history",
-        "codexs history --json",
-        "codexs history clear",
-        "codexs history enable",
-        "codexs history disable"
-      ],
+      "helpUsages": ["codexs history [--json|clear|enable|disable]"],
       "usageErrors": {
         "default": "codexs history [--json|clear|enable|disable]"
       }

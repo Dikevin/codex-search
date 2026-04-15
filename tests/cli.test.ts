@@ -251,7 +251,7 @@ test("runCli prints help with split usage lines and grouped search flags", async
   assert.equal(exitCode, 0);
   assert.equal(stderr.read(), "");
   const help = stdout.read();
-  assert.match(help, /Usage:\n  codexs \[search-flags\]\n  codexs <keyword>\n  codexs lucky <keyword>\n  codexs <keyword> --json \[json-flags\]\n  codexs <keyword> --jsonl\n  codexs -- <keyword-starting-with-dash>\n  codexs history\n  codexs history --json\n  codexs history clear\n  codexs history enable\n  codexs history disable/);
+  assert.match(help, /Usage:\n  codexs \[search-flags\]\n  codexs <keyword>\n  codexs lucky <keyword>\n  codexs <keyword> --json \[json-flags\]\n  codexs <keyword> --jsonl\n  codexs -- <keyword-starting-with-dash>\n  codexs history \[--json\|clear\|enable\|disable\]/);
   assert.match(help, /\nShared search flags:\n/);
   assert.match(help, /--active \| --archived \| --all/);
   assert.match(help, /\nHistory:\n/);

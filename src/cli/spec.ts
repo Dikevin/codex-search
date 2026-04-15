@@ -62,10 +62,7 @@ export function listHelpUsageLines(): string[] {
   const searchUsage = getCommandSpec("search").helpUsages;
   const historyUsage = getCommandSpec("history").helpUsages;
 
-  return [
-    ...searchUsage,
-    ...historyUsage,
-  ];
+  return [...new Set([...searchUsage, ...historyUsage])];
 }
 
 export function getCommandSpec(name: string): CliCommandSpec {

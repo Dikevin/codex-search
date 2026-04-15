@@ -48,13 +48,15 @@
 - Home screen: type a keyword directly
 - `Ctrl+o` lucky-open the newest matching active thread for the current keyword; when preview results are visible it opens the first preview hit immediately
 - `s` reopen the global search prompt with the current keyword prefilled
-- `f` open the bottom overlay filter picker and apply source/range/view/case changes globally for later searches in the same TUI session
+- `f` open the bottom overlay filter picker from the thread list and apply source/range/view/case changes globally for later searches in the same TUI session
+- `Ctrl+f` open the bottom overlay filter picker while the search prompt is active
 - `Tab` accept the selected `recent` or `project` suggestion while the bottom search dock is active
 - `1-5` open the numbered preview result directly when preview results are visible
-- `Backspace/Delete` remove the selected `recent` suggestion while the suggestion list is focused
+- `Backspace/Delete` remove the selected `recent` suggestion while the suggestion list is focused, or edit the query at the cursor when the prompt itself is focused
+- Search prompt editing also supports `Ctrl+a`, `Ctrl+e`, `Ctrl+u`, `Ctrl+k`, `Ctrl+w`, `Left/Right`, and `Home/End`; `Option+Left/Right` works on terminals that emit Meta word-motion keys
 - `Enter` open selected active thread
 - `o` open selected active thread and stay in the picker
-- `r` resume selected active thread in CLI
+- `r` resume selected active thread in CLI and return to `codexs` when `codex` exits
 - `Space` expand or collapse selected thread details and move focus into the preview when opening
 - `Tab` switch focus between the thread list and the expanded transcript preview
 - `l` or `Right` move focus into the expanded transcript preview
@@ -65,7 +67,8 @@
 - `g` / `G` jump to the first or last thread
 - `/` search inside the expanded transcript preview
 - `n` / `N` jump to the next or previous transcript-search match
-- `q` / `Esc` quit, except that `Esc` first cancels the active search prompt or filter picker
+- `q` quit from the thread list or expanded detail view
+- `Esc` cancel the active prompt or filter picker, return the list to the home screen, and quit from the home screen
 
 ## Result actions
 

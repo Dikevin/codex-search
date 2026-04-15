@@ -9,6 +9,7 @@ import type {
 import type { SearchProgress } from "../search/view-filter.js";
 import type {
   TuiFilterRow,
+  TuiFilterRowState,
   TuiSearchFilters,
 } from "./search-filters.js";
 
@@ -104,7 +105,7 @@ export interface TuiState {
 
 export interface TuiFilterPickerState {
   active: boolean;
-  rows: TuiFilterRow[];
+  rows: TuiFilterRowState[];
   selected: number;
   mode: "rows" | "values";
   valueOptions?: string[];

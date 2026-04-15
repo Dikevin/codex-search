@@ -88,6 +88,21 @@ function createTuiStdin() {
   return stream;
 }
 
+async function waitForCondition(
+  condition: () => boolean,
+  timeoutMs = 200,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  assert.fail("Timed out waiting for condition.");
+}
+
 function createResults(count: number, overrides?: {
   title?: (index: number) => string | null;
   cwd?: (index: number) => string | null;
@@ -238,7 +253,8 @@ test("renderSearchTuiScreen shows a centered home search view before the first q
   assert.match(screen, /search>\s*qu/i);
   assert.match(screen, /Enter search/i);
   assert.match(screen, /1-5 open/i);
-  assert.match(screen, /f filters/i);
+  assert.match(screen, /\^F filters/i);
+  assert.match(screen, /Esc quit/i);
 });
 
 test("renderSearchTuiScreen places passive search context above the status bar", () => {
@@ -1155,11 +1171,34 @@ test("runSearchTui opens a global search prompt with s", async () => {
   stdin.emit("keypress", "s", { name: "s" });
   await new Promise((resolve) => setTimeout(resolve, 10));
   stdin.emit("keypress", "", { name: "escape" });
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitForCondition(() => stdin.listenerCount("keypress") > 0);
   stdin.emit("keypress", "q", { name: "q" });
 
   assert.equal(await run, 0);
   assert.match(stripAnsi(stdout.read()), /search>\s*quota/);
+});
+
+test("runSearchTui returns to the home screen from list results with escape", async () => {
+  const results = createResults(2);
+  const stdin = createTuiStdin();
+  const stdout = createTuiStdout(100, 20);
+
+  const run = runSearchTui({
+    query: "quota",
+    results,
+    stdin,
+    stdout: stdout.stream,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "", { name: "escape" });
+  await waitForCondition(() => stdin.listenerCount("keypress") > 0);
+  stdin.emit("keypress", "", { name: "escape" });
+
+  assert.equal(await run, 0);
+  const output = stripAnsi(stdout.read());
+  assert.match(output, /search local codex threads/i);
+  assert.match(output, /search>/);
 });
 
 test("runSearchTui opens preview results directly with number shortcuts from the search dock", async () => {
@@ -1240,7 +1279,7 @@ test("runSearchTui closes the filter overlay without restarting search when noth
   });
 
   await new Promise((resolve) => setTimeout(resolve, 10));
-  stdin.emit("keypress", "f", { name: "f" });
+  stdin.emit("keypress", "\u0006", { name: "f", ctrl: true });
   await new Promise((resolve) => setTimeout(resolve, 10));
   stdin.emit("keypress", "", { name: "escape" });
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1264,7 +1303,7 @@ test("runSearchTui opens a filter picker with f", async () => {
   });
 
   await new Promise((resolve) => setTimeout(resolve, 10));
-  stdin.emit("keypress", "f", { name: "f" });
+  stdin.emit("keypress", "\u0006", { name: "f", ctrl: true });
   await new Promise((resolve) => setTimeout(resolve, 10));
   stdin.emit("keypress", "", { name: "escape" });
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1311,6 +1350,148 @@ test("runSearchTui starts a new search from the home screen", async () => {
   assert.match(stripAnsi(stdout.read()), /Started from home/);
 });
 
+test("runSearchTui restores the picker after resume exits", async () => {
+  const results = createResults(2);
+  const stdin = createTuiStdin();
+  const stdout = createTuiStdout(100, 20);
+  const resumed: string[] = [];
+  let settled = false;
+
+  const run = runSearchTui({
+    query: "quota",
+    results,
+    stdin,
+    stdout: stdout.stream,
+    resumeHit: async (hit) => {
+      resumed.push(hit.sessionId);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return 0;
+    },
+  }).then((exitCode) => {
+    settled = true;
+    return exitCode;
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "r", { name: "r" });
+  await waitForCondition(() => stdin.isRaw === true && stdin.listenerCount("keypress") > 0);
+
+  assert.deepEqual(resumed, ["thread-1"]);
+  assert.equal(settled, false);
+  assert.equal(stdin.isRaw, true);
+
+  stdin.emit("keypress", "q", { name: "q" });
+
+  assert.equal(await run, 0);
+});
+
+test("runSearchTui supports cursor movement and emacs-style editing in the global search prompt", async () => {
+  const stdin = createTuiStdin();
+  const stdout = createTuiStdout(100, 20);
+  const requests: Array<{ query: string }> = [];
+
+  const run = runSearchTui({
+    query: "",
+    stdin,
+    stdout: stdout.stream,
+    onStartSearch: async ({ query, filters }) => {
+      requests.push({ query });
+      return {
+        query,
+        caseSensitive: filters.caseSensitive,
+        results: createResults(1, {
+          title: () => query,
+        }),
+      };
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  for (const char of ["q", "t", "a"]) {
+    stdin.emit("keypress", char, { name: char });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  stdin.emit("keypress", "", { name: "left" });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  stdin.emit("keypress", "", { name: "left" });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  for (const char of ["u", "o"]) {
+    stdin.emit("keypress", char, { name: char });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  stdin.emit("keypress", "\u0005", { name: "e", ctrl: true });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  for (const char of [" ", "d", "r", "i", "f", "t"]) {
+    stdin.emit("keypress", char, { name: char === " " ? "space" : char });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  stdin.emit("keypress", "\u0017", { name: "w", ctrl: true });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  stdin.emit("keypress", "", { name: "backspace" });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  stdin.emit("keypress", "\u0001", { name: "a", ctrl: true });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  for (const char of ["r", "e", "c", "e", "n", "t", " "]) {
+    stdin.emit("keypress", char, { name: char === " " ? "space" : char });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  stdin.emit("keypress", "\r", { name: "return" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  stdin.emit("keypress", "q", { name: "q" });
+
+  assert.equal(await run, 0);
+  assert.deepEqual(requests, [{ query: "recent quota" }]);
+  assert.match(stripAnsi(stdout.read()), /recent quota/);
+});
+
+test("runSearchTui supports ctrl-u and ctrl-k in the global search prompt", async () => {
+  const stdin = createTuiStdin();
+  const stdout = createTuiStdout(100, 20);
+  const requests: Array<{ query: string }> = [];
+
+  const run = runSearchTui({
+    query: "",
+    stdin,
+    stdout: stdout.stream,
+    onStartSearch: async ({ query, filters }) => {
+      requests.push({ query });
+      return {
+        query,
+        caseSensitive: filters.caseSensitive,
+        results: createResults(1, {
+          title: () => query,
+        }),
+      };
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  for (const char of ["q", "u", "o", "t", "a", " ", "d", "r", "i", "f", "t"]) {
+    stdin.emit("keypress", char, { name: char === " " ? "space" : char });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  stdin.emit("keypress", "\u0001", { name: "a", ctrl: true });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  stdin.emit("keypress", "\u000b", { name: "k", ctrl: true });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  for (const char of ["n", "e", "w"]) {
+    stdin.emit("keypress", char, { name: char });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  stdin.emit("keypress", "\u0015", { name: "u", ctrl: true });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  for (const char of ["f", "i", "n", "a", "l"]) {
+    stdin.emit("keypress", char, { name: char });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  stdin.emit("keypress", "\r", { name: "return" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  stdin.emit("keypress", "q", { name: "q" });
+
+  assert.equal(await run, 0);
+  assert.deepEqual(requests, [{ query: "final" }]);
+});
+
 test("runSearchTui applies filter changes to later searches", async () => {
   const stdin = createTuiStdin();
   const stdout = createTuiStdout(100, 20);
@@ -1333,7 +1514,7 @@ test("runSearchTui applies filter changes to later searches", async () => {
   });
 
   await new Promise((resolve) => setTimeout(resolve, 10));
-  stdin.emit("keypress", "f", { name: "f" });
+  stdin.emit("keypress", "\u0006", { name: "f", ctrl: true });
   await new Promise((resolve) => setTimeout(resolve, 10));
   stdin.emit("keypress", "\r", { name: "return" });
   await new Promise((resolve) => setTimeout(resolve, 10));

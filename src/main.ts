@@ -32,8 +32,10 @@ import {
 } from "./search/session-reader.js";
 import { runSearchTui } from "./tui/index.js";
 import {
+  createTuiSearchFilters,
   createDefaultTuiFilters,
   formatTuiRangeLabel,
+  resolveSources,
   type TuiSearchFilters,
 } from "./tui/search-filters.js";
 import type { TuiQuerySuggestion } from "./tui/types.js";
@@ -702,16 +704,15 @@ async function* trackSearchHits(
 }
 
 function buildTuiFilters(parsed: ParsedArgs): TuiSearchFilters {
-  const filters = createDefaultTuiFilters();
-  filters.sourceMode = parsed.sourceMode;
-  filters.view = parsed.view;
-  filters.caseSensitive = parsed.caseSensitive;
-  filters.timeFilter = parsed.allTime
-    ? { kind: "all-time" }
-    : parsed.start || parsed.end
-      ? { kind: "range", start: parsed.start ?? null, end: parsed.end ?? null }
-      : { kind: "recent", value: parsed.recent ?? "30d" };
-  return filters;
+  return createTuiSearchFilters({
+    sourceMode: parsed.sourceMode,
+    view: parsed.view,
+    caseSensitive: parsed.caseSensitive,
+    recent: parsed.allTime ? null : (parsed.recent ?? (parsed.start || parsed.end ? null : "30d")),
+    start: parsed.start,
+    end: parsed.end,
+    allTime: parsed.allTime,
+  });
 }
 
 function buildSearchOptionsFromTuiFilters(
@@ -724,13 +725,13 @@ function buildSearchOptionsFromTuiFilters(
     query,
     codexHomeDir: parsed.rootDir ?? undefined,
     cwd: parsed.cwd ? resolve(parsed.cwd) : undefined,
-    sources: (filters.sourceMode === "all" ? ["active", "archived"] : [filters.sourceMode]) as SearchSource[],
+    sources: resolveSources(filters.sourceMode) as SearchSource[],
     view: filters.view,
     caseSensitive: filters.caseSensitive,
-    recent: filters.timeFilter.kind === "recent" ? filters.timeFilter.value : undefined,
-    start: filters.timeFilter.kind === "range" ? filters.timeFilter.start ?? undefined : undefined,
-    end: filters.timeFilter.kind === "range" ? filters.timeFilter.end ?? undefined : undefined,
-    allTime: filters.timeFilter.kind === "all-time",
+    recent: filters.recent ?? undefined,
+    start: filters.start ?? undefined,
+    end: filters.end ?? undefined,
+    allTime: filters.allTime,
     now,
   };
 }
@@ -755,10 +756,10 @@ function createSearchLogContextForTui(
       view: filters.view,
       caseSensitive: filters.caseSensitive,
       cwd: searchOptions.cwd ?? null,
-      recent: filters.timeFilter.kind === "recent" ? filters.timeFilter.value : null,
-      start: filters.timeFilter.kind === "range" ? filters.timeFilter.start : null,
-      end: filters.timeFilter.kind === "range" ? filters.timeFilter.end : null,
-      allTime: filters.timeFilter.kind === "all-time",
+      recent: filters.recent,
+      start: filters.start,
+      end: filters.end,
+      allTime: filters.allTime,
       json: false,
       jsonl: false,
       page: null,

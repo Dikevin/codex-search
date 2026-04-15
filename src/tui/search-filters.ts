@@ -1,265 +1,352 @@
+import type { SearchArchivedSessionsOptions, SearchSource } from "../search/session-reader.js";
 import type { SearchViewMode } from "../search/view-filter.js";
 
 export type TuiSourceMode = "active" | "archived" | "all";
-
-export type TuiTimeFilter =
-  | { kind: "recent"; value: string }
-  | { kind: "range"; start: string | null; end: string | null }
-  | { kind: "all-time" };
+export type TuiRangePreset = "1d" | "7d" | "30d" | "all-time" | "custom";
+export type TuiFilterRow = "source" | "range" | "view" | "case";
 
 export interface TuiSearchFilters {
   sourceMode: TuiSourceMode;
   view: SearchViewMode;
   caseSensitive: boolean;
-  timeFilter: TuiTimeFilter;
+  range: TuiRangePreset;
+  recent: string | null;
+  start: string | null;
+  end: string | null;
+  allTime: boolean;
 }
 
-export type TuiFilterRowKey = "source" | "range" | "view" | "case";
-
-export interface TuiFilterRow {
-  key: TuiFilterRowKey;
+export interface TuiFilterRowState {
+  key: TuiFilterRow;
   label: string;
   value: string;
 }
 
-const SOURCE_OPTIONS: readonly TuiSourceMode[] = ["active", "archived", "all"];
-const VIEW_OPTIONS: readonly SearchViewMode[] = ["useful", "ops", "protocol", "all"];
-const CASE_OPTIONS = [false, true] as const;
-const RECENT_OPTIONS = ["1d", "7d", "30d"] as const;
+export const FILTER_ROW_ORDER: readonly TuiFilterRow[] = [
+  "source",
+  "range",
+  "view",
+  "case",
+] as const;
 
-export function createDefaultTuiFilters(): TuiSearchFilters {
+const SOURCE_OPTIONS: readonly TuiSourceMode[] = [
+  "active",
+  "archived",
+  "all",
+] as const;
+
+const RANGE_OPTIONS: readonly Exclude<TuiRangePreset, "custom">[] = [
+  "1d",
+  "7d",
+  "30d",
+  "all-time",
+] as const;
+
+const VIEW_OPTIONS: readonly SearchViewMode[] = [
+  "useful",
+  "ops",
+  "protocol",
+  "all",
+] as const;
+
+const CASE_OPTIONS: readonly boolean[] = [
+  false,
+  true,
+] as const;
+
+export function createTuiSearchFilters(options: {
+  sourceMode: TuiSourceMode;
+  view: SearchViewMode;
+  caseSensitive: boolean;
+  recent: string | null;
+  start: string | null;
+  end: string | null;
+  allTime: boolean;
+}): TuiSearchFilters {
   return {
-    sourceMode: "active",
-    view: "useful",
-    caseSensitive: false,
-    timeFilter: {
-      kind: "recent",
-      value: "30d",
-    },
+    sourceMode: options.sourceMode,
+    view: options.view,
+    caseSensitive: options.caseSensitive,
+    range: resolveRangePreset(options.recent, options.start, options.end, options.allTime),
+    recent: options.recent,
+    start: options.start,
+    end: options.end,
+    allTime: options.allTime,
   };
 }
 
-export function getTuiFilterRows(filters: TuiSearchFilters): TuiFilterRow[] {
-  return [
-    {
-      key: "source",
-      label: "Source",
-      value: filters.sourceMode,
-    },
-    {
-      key: "range",
-      label: "Range",
-      value: formatTuiTimeFilter(filters.timeFilter),
-    },
-    {
-      key: "view",
-      label: "View",
-      value: filters.view,
-    },
-    {
-      key: "case",
-      label: "Case",
-      value: filters.caseSensitive ? "exact" : "ignore",
-    },
-  ];
+export function createDefaultTuiFilters(): TuiSearchFilters {
+  return createTuiSearchFilters({
+    sourceMode: "active",
+    view: "useful",
+    caseSensitive: false,
+    recent: "30d",
+    start: null,
+    end: null,
+    allTime: false,
+  });
 }
 
-export function formatTuiTimeFilter(timeFilter: TuiTimeFilter): string {
-  if (timeFilter.kind === "all-time") {
-    return "all-time";
-  }
-
-  if (timeFilter.kind === "recent") {
-    return timeFilter.value;
-  }
-
-  return `${timeFilter.start ?? "begin"}..${timeFilter.end ?? "today"}`;
+export function resolveSources(sourceMode: TuiSourceMode): SearchSource[] {
+  return sourceMode === "all"
+    ? ["active", "archived"]
+    : [sourceMode];
 }
 
-export function formatTuiRangeLabel(filters: TuiSearchFilters): string {
-  if (filters.timeFilter.kind === "all-time") {
+export function formatSourceLabel(sourceMode: TuiSourceMode): string {
+  return sourceMode;
+}
+
+export function formatRangeLabel(filters: TuiSearchFilters): string {
+  if (filters.allTime) {
     return "all time";
   }
 
-  if (filters.timeFilter.kind === "recent") {
-    return `recent ${filters.timeFilter.value}`;
+  if (filters.recent) {
+    return `recent ${filters.recent}`;
   }
 
-  return `${filters.timeFilter.start ?? "begin"}..${filters.timeFilter.end ?? "today"}`;
+  if (filters.start || filters.end) {
+    return `${filters.start ?? "begin"}..${filters.end ?? "today"}`;
+  }
+
+  return "recent 30d";
 }
 
-export function formatCompactFilterSummary(
-  filters: TuiSearchFilters,
-  cwdLabel?: string,
-): string {
-  const parts = [
+export const formatTuiRangeLabel = formatRangeLabel;
+
+export function formatFilterSummary(filters: TuiSearchFilters): string {
+  return [
     filters.sourceMode,
-    formatTuiTimeFilter(filters.timeFilter),
+    formatShortRange(filters),
     filters.view,
     filters.caseSensitive ? "exact case" : "ignore case",
+  ].join(" · ");
+}
+
+export function formatCompactFilterSummary(filters: TuiSearchFilters, cwdLabel?: string | null): string {
+  const parts = [
+    formatFilterSummary(filters),
     cwdLabel ? `cwd ${cwdLabel}` : null,
   ].filter(Boolean) as string[];
-
   return parts.join(" · ");
 }
 
-export function cycleTuiFilterValue(
+export function cycleFilterRow(
   filters: TuiSearchFilters,
-  rowKey: TuiFilterRowKey,
-  direction: -1 | 1,
+  row: TuiFilterRow,
+  direction: 1 | -1,
 ): TuiSearchFilters {
-  if (rowKey === "source") {
+  if (row === "source") {
     return {
       ...filters,
       sourceMode: cycleValue(SOURCE_OPTIONS, filters.sourceMode, direction),
     };
   }
 
-  if (rowKey === "view") {
+  if (row === "range") {
+    return applyRangePreset(filters, cycleValue(RANGE_OPTIONS, normalizeRangeForCycling(filters.range), direction));
+  }
+
+  if (row === "view") {
     return {
       ...filters,
       view: cycleValue(VIEW_OPTIONS, filters.view, direction),
     };
   }
 
-  if (rowKey === "case") {
-    return {
-      ...filters,
-      caseSensitive: cycleValue(CASE_OPTIONS, filters.caseSensitive, direction),
-    };
-  }
-
   return {
     ...filters,
-    timeFilter: cycleTimeFilter(filters.timeFilter, direction),
+    caseSensitive: cycleValue(CASE_OPTIONS, filters.caseSensitive, direction),
   };
-}
-
-export function getTuiFilterValueOptions(
-  filters: TuiSearchFilters,
-  rowKey: TuiFilterRowKey,
-): string[] {
-  if (rowKey === "source") {
-    return [...SOURCE_OPTIONS];
-  }
-
-  if (rowKey === "view") {
-    return [...VIEW_OPTIONS];
-  }
-
-  if (rowKey === "case") {
-    return CASE_OPTIONS.map((value) => (value ? "exact" : "ignore"));
-  }
-
-  return [...getTimeFilterOptions(filters.timeFilter)];
 }
 
 export function applyTuiFilterValue(
   filters: TuiSearchFilters,
-  rowKey: TuiFilterRowKey,
+  row: TuiFilterRow,
   value: string,
 ): TuiSearchFilters {
-  if (rowKey === "source") {
+  if (row === "source" && (value === "active" || value === "archived" || value === "all")) {
     return {
       ...filters,
-      sourceMode: value as TuiSourceMode,
+      sourceMode: value,
     };
   }
 
-  if (rowKey === "view") {
+  if (row === "range" && (value === "1d" || value === "7d" || value === "30d" || value === "all-time")) {
+    return applyRangePreset(filters, value);
+  }
+
+  if (row === "range" && value === "custom") {
+    return filters;
+  }
+
+  if (row === "view" && (value === "useful" || value === "ops" || value === "protocol" || value === "all")) {
     return {
       ...filters,
-      view: value as SearchViewMode,
+      view: value,
     };
   }
 
-  if (rowKey === "case") {
+  if (row === "case") {
     return {
       ...filters,
       caseSensitive: value === "exact",
     };
   }
 
-  if (value === "all-time") {
-    return {
-      ...filters,
-      timeFilter: { kind: "all-time" },
-    };
+  return filters;
+}
+
+export function formatFilterRowValue(filters: TuiSearchFilters, row: TuiFilterRow): string {
+  if (row === "source") {
+    return filters.sourceMode;
   }
 
-  if (value.includes("..")) {
-    const [start, end] = value.split("..");
+  if (row === "range") {
+    return formatShortRange(filters);
+  }
+
+  if (row === "view") {
+    return filters.view;
+  }
+
+  return filters.caseSensitive ? "exact" : "ignore";
+}
+
+export function getTuiFilterRows(filters: TuiSearchFilters): TuiFilterRowState[] {
+  return FILTER_ROW_ORDER.map((key) => ({
+    key,
+    label: key === "source"
+      ? "Source"
+      : key === "range"
+        ? "Range"
+        : key === "view"
+          ? "View"
+          : "Case",
+    value: formatFilterRowValue(filters, key),
+  }));
+}
+
+export function getTuiFilterValueOptions(
+  filters: TuiSearchFilters,
+  row: TuiFilterRow,
+): string[] {
+  if (row === "source") {
+    return [...SOURCE_OPTIONS];
+  }
+
+  if (row === "range") {
+    const options = [...RANGE_OPTIONS];
+    if (filters.range === "custom") {
+      return ["custom", ...options];
+    }
+    return options;
+  }
+
+  if (row === "view") {
+    return [...VIEW_OPTIONS];
+  }
+
+  return ["ignore", "exact"];
+}
+
+export function sameTuiFilters(left: TuiSearchFilters, right: TuiSearchFilters): boolean {
+  return left.sourceMode === right.sourceMode
+    && left.view === right.view
+    && left.caseSensitive === right.caseSensitive
+    && left.range === right.range
+    && left.recent === right.recent
+    && left.start === right.start
+    && left.end === right.end
+    && left.allTime === right.allTime;
+}
+
+export function toSearchOptions(filters: TuiSearchFilters): Pick<
+  SearchArchivedSessionsOptions,
+  "sources" | "view" | "caseSensitive" | "recent" | "start" | "end" | "allTime"
+> {
+  return {
+    sources: resolveSources(filters.sourceMode),
+    view: filters.view,
+    caseSensitive: filters.caseSensitive,
+    recent: filters.recent ?? undefined,
+    start: filters.start ?? undefined,
+    end: filters.end ?? undefined,
+    allTime: filters.allTime,
+  };
+}
+
+function resolveRangePreset(
+  recent: string | null,
+  start: string | null,
+  end: string | null,
+  allTime: boolean,
+): TuiRangePreset {
+  if (allTime) {
+    return "all-time";
+  }
+
+  if (recent === "1d" || recent === "7d" || recent === "30d") {
+    return recent;
+  }
+
+  if (start || end) {
+    return "custom";
+  }
+
+  return "30d";
+}
+
+function normalizeRangeForCycling(range: TuiRangePreset): Exclude<TuiRangePreset, "custom"> {
+  return range === "custom" ? "30d" : range;
+}
+
+function applyRangePreset(filters: TuiSearchFilters, range: Exclude<TuiRangePreset, "custom">): TuiSearchFilters {
+  if (range === "all-time") {
     return {
       ...filters,
-      timeFilter: {
-        kind: "range",
-        start: start && start !== "begin" ? start : null,
-        end: end && end !== "today" ? end : null,
-      },
+      range,
+      recent: null,
+      start: null,
+      end: null,
+      allTime: true,
     };
   }
 
   return {
     ...filters,
-    timeFilter: {
-      kind: "recent",
-      value,
-    },
+    range,
+    recent: range,
+    start: null,
+    end: null,
+    allTime: false,
   };
 }
 
-export function sameTuiFilters(
-  left: TuiSearchFilters,
-  right: TuiSearchFilters,
-): boolean {
-  return left.sourceMode === right.sourceMode
-    && left.view === right.view
-    && left.caseSensitive === right.caseSensitive
-    && formatTuiTimeFilter(left.timeFilter) === formatTuiTimeFilter(right.timeFilter);
-}
-
-function cycleTimeFilter(
-  timeFilter: TuiTimeFilter,
-  direction: -1 | 1,
-): TuiTimeFilter {
-  const options = getTimeFilterOptions(timeFilter);
-  const currentLabel = formatTuiTimeFilter(timeFilter);
-  const next = cycleValue(options, currentLabel, direction);
-
-  if (next === "all-time") {
-    return { kind: "all-time" };
+function formatShortRange(filters: TuiSearchFilters): string {
+  if (filters.allTime) {
+    return "all-time";
   }
 
-  if (next.includes("..")) {
-    const [start, end] = next.split("..");
-    return {
-      kind: "range",
-      start: start && start !== "begin" ? start : null,
-      end: end && end !== "today" ? end : null,
-    };
+  if (filters.recent) {
+    return filters.recent;
   }
 
-  return {
-    kind: "recent",
-    value: next,
-  };
-}
-
-function getTimeFilterOptions(timeFilter: TuiTimeFilter): readonly string[] {
-  const currentLabel = formatTuiTimeFilter(timeFilter);
-  if (timeFilter.kind === "range") {
-    return [currentLabel, ...RECENT_OPTIONS, "all-time"];
+  if (filters.start || filters.end) {
+    return "custom";
   }
 
-  return [...RECENT_OPTIONS, "all-time"];
+  return "30d";
 }
 
-function cycleValue<T>(
+function cycleValue<T extends string | boolean>(
   values: readonly T[],
   current: T,
-  direction: -1 | 1,
+  direction: 1 | -1,
 ): T {
-  const currentIndex = Math.max(0, values.indexOf(current));
-  const nextIndex = (currentIndex + direction + values.length) % values.length;
+  const currentIndex = values.indexOf(current);
+  const startIndex = currentIndex === -1 ? 0 : currentIndex;
+  const nextIndex = (startIndex + direction + values.length) % values.length;
   return values[nextIndex]!;
 }
