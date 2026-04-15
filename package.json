@@ -1,0 +1,49 @@
+{
+  "name": "codex-search",
+  "version": "0.1.0",
+  "description": "Search archived Codex session JSONL files from the command line.",
+  "license": "MIT",
+  "type": "module",
+  "homepage": "https://github.com/Dikevin/codex-search#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dikevin/codex-search.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Dikevin/codex-search/issues"
+  },
+  "keywords": [
+    "codex",
+    "search",
+    "cli",
+    "jsonl",
+    "chat-history"
+  ],
+  "bin": {
+    "codexs": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx --test tests/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "verify": "pnpm typecheck && pnpm test && pnpm build",
+    "prepack": "pnpm build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.2"
+  }
+}

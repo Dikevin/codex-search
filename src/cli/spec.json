@@ -1,0 +1,15 @@
+{
+  "programName": "codexs",
+  "summary": "Search archived Codex session JSONL files.",
+  "commands": [
+    {
+      "name": "search",
+      "helpUsages": [
+        "codexs <keyword> [--json] [-n <limit>] [-i]"
+      ],
+      "usageErrors": {
+        "default": "codexs <keyword> [--json] [-n <limit>] [-i]"
+      }
+    }
+  ]
+}
