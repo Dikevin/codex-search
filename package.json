@@ -1,7 +1,7 @@
 {
   "name": "codex-search",
   "version": "0.1.0",
-  "description": "Search archived Codex session JSONL files from the command line.",
+  "description": "Search Codex session JSONL files from the command line.",
   "license": "MIT",
   "type": "module",
   "homepage": "https://github.com/Dikevin/codex-search#readme",
@@ -24,6 +24,7 @@
   },
   "files": [
     "dist",
+    "skills",
     "README.md",
     "LICENSE"
   ],

@@ -1,14 +1,16 @@
 {
   "programName": "codexs",
-  "summary": "Search archived Codex session JSONL files.",
+  "summary": "Search Codex session JSONL files.",
   "commands": [
     {
       "name": "search",
       "helpUsages": [
-        "codexs <keyword> [--json] [-n <limit>] [-i]"
+        "codexs <keyword> [--active|--archived] [--recent <duration>|--start <YYYY-MM-DD> --end <YYYY-MM-DD>] [--json] [-n <limit>] [-i]",
+        "codexs lucky <keyword> [--active|--archived] [--recent <duration>|--start <YYYY-MM-DD> --end <YYYY-MM-DD>] [-n <limit>] [-i]"
       ],
       "usageErrors": {
-        "default": "codexs <keyword> [--json] [-n <limit>] [-i]"
+        "default": "codexs <keyword> [--active|--archived] [--recent <duration>|--start <YYYY-MM-DD> --end <YYYY-MM-DD>] [--json] [-n <limit>] [-i]",
+        "lucky": "codexs lucky <keyword> [--active|--archived] [--recent <duration>|--start <YYYY-MM-DD> --end <YYYY-MM-DD>] [-n <limit>] [-i]"
       }
     }
   ]

@@ -1,4 +1,6 @@
 import packageJson from "../package.json" with { type: "json" };
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import { parseArgs, type ParsedArgs } from "./cli/args.js";
 import { printHelp } from "./cli/help.js";
@@ -11,7 +13,12 @@ interface CliStreams {
   stderr: NodeJS.WriteStream;
 }
 
-interface RunCliOptions extends Partial<CliStreams> {}
+interface RunCliOptions extends Partial<CliStreams> {
+  openUrl?: (url: string) => Promise<void>;
+  now?: Date;
+}
+
+const execFileAsync = promisify(execFile);
 
 function writeResults(
   stream: NodeJS.WriteStream,
@@ -27,6 +34,8 @@ export async function runCli(
 ): Promise<number> {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
+  const openUrl = options.openUrl ?? defaultOpenUrl;
+  const now = options.now;
 
   let parsed: ParsedArgs;
   try {
@@ -47,17 +56,38 @@ export async function runCli(
   }
 
   if (!parsed.query) {
-    stderr.write(`Usage: ${getUsage()}\n`);
+    stderr.write(`Usage: ${getUsage("search", parsed.mode === "lucky" ? "lucky" : "default")}\n`);
     return 1;
   }
 
   const results = await searchArchivedSessions({
     query: parsed.query,
-    rootDir: parsed.rootDir ?? undefined,
+    codexHomeDir: parsed.rootDir ?? undefined,
+    sources: parsed.sourceMode === "all" ? ["active", "archived"] : [parsed.sourceMode],
     caseSensitive: parsed.caseSensitive,
     limit: parsed.limit,
+    recent: parsed.recent ?? undefined,
+    start: parsed.start ?? undefined,
+    end: parsed.end ?? undefined,
+    now,
   });
+
+  if (parsed.mode === "lucky") {
+    const luckyHit = results[0];
+    if (!luckyHit) {
+      stderr.write("No matches found.\n");
+      return 1;
+    }
+
+    await openUrl(luckyHit.deepLink);
+    stdout.write(`Opened ${luckyHit.deepLink}\n`);
+    return 0;
+  }
 
   writeResults(stdout, results, parsed.json);
   return 0;
+}
+
+async function defaultOpenUrl(url: string): Promise<void> {
+  await execFileAsync("open", [url]);
 }

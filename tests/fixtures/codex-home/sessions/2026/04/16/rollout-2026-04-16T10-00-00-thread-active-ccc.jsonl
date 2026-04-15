@@ -1,2 +1,2 @@
-{"timestamp":"2026-04-16T10:00:00.000Z","type":"session_meta","payload":{"id":"thread-bbb","timestamp":"2026-04-16T10:00:00.000Z","cwd":"/tmp/project-b","originator":"Codex Desktop"}}
+{"timestamp":"2026-04-16T10:00:00.000Z","type":"session_meta","payload":{"id":"thread-active-ccc","timestamp":"2026-04-16T10:00:00.000Z","cwd":"/tmp/project-active-c","originator":"Codex Desktop"}}
 {"timestamp":"2026-04-16T10:01:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Write a release note for the desktop login flow."}]}}
