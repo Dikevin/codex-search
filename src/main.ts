@@ -15,7 +15,6 @@ interface CliStreams {
 
 interface RunCliOptions extends Partial<CliStreams> {
   openUrl?: (url: string) => Promise<void>;
-  now?: Date;
 }
 
 const execFileAsync = promisify(execFile);
@@ -35,7 +34,6 @@ export async function runCli(
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const openUrl = options.openUrl ?? defaultOpenUrl;
-  const now = options.now;
 
   let parsed: ParsedArgs;
   try {
@@ -62,14 +60,9 @@ export async function runCli(
 
   const results = await searchArchivedSessions({
     query: parsed.query,
-    codexHomeDir: parsed.rootDir ?? undefined,
-    sources: parsed.sourceMode === "all" ? ["active", "archived"] : [parsed.sourceMode],
+    rootDir: parsed.rootDir ?? undefined,
     caseSensitive: parsed.caseSensitive,
     limit: parsed.limit,
-    recent: parsed.recent ?? undefined,
-    start: parsed.start ?? undefined,
-    end: parsed.end ?? undefined,
-    now,
   });
 
   if (parsed.mode === "lucky") {

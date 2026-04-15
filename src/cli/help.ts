@@ -3,7 +3,8 @@ import { getUsage, PROGRAM_SUMMARY } from "./spec.js";
 export function printHelp(stream: NodeJS.WriteStream): void {
   stream.write(`${PROGRAM_SUMMARY}\n\n`);
   stream.write(`Usage:\n`);
-  stream.write(`  ${getUsage()}\n\n`);
+  stream.write(`  ${getUsage()}\n`);
+  stream.write(`  ${getUsage("search", "lucky")}\n\n`);
   stream.write(`Options:\n`);
   stream.write(`  --active              Search active sessions only\n`);
   stream.write(`  --archived            Search archived sessions only\n`);
