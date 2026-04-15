@@ -60,16 +60,11 @@ export function listFlagAliases(): Array<{ alias: string; flag: string }> {
 
 export function listHelpUsageLines(): string[] {
   const searchUsage = getCommandSpec("search").helpUsages;
-  const luckyUsage = getCommandSpec("lucky").helpUsages;
-  const completionUsage = getCommandSpec("completion").helpUsages;
+  const historyUsage = getCommandSpec("history").helpUsages;
 
   return [
-    `${PROGRAM_NAME} --version`,
-    `${PROGRAM_NAME} --help`,
-    ...(searchUsage[0] ? [searchUsage[0]] : []),
-    ...luckyUsage,
-    ...searchUsage.slice(1),
-    ...completionUsage,
+    ...searchUsage,
+    ...historyUsage,
   ];
 }
 

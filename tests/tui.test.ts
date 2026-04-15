@@ -123,8 +123,10 @@ function createThreadResults(matchCount: number, overrides?: {
   text?: (index: number) => string;
   title?: string;
   sessionId?: string;
+  source?: "active" | "archived";
 }): SearchResultsPage {
   const sessionId = overrides?.sessionId ?? "thread-detail";
+  const source = overrides?.source ?? "active";
   return {
     hits: Array.from({ length: matchCount }, (_, index) => ({
       sessionId,
@@ -139,7 +141,7 @@ function createThreadResults(matchCount: number, overrides?: {
         timestamp: `2026-04-15T10:${String(index).padStart(2, "0")}:30.000Z`,
         secondaryText: null,
       },
-      source: "active" as const,
+      source,
       filePath: `/tmp/${sessionId}.jsonl`,
       resumeCommand: `codex resume ${sessionId}`,
       deepLink: `codex://threads/${sessionId}`,
@@ -166,17 +168,97 @@ test("renderSearchTuiScreen shows thread-level rows by default", async () => {
     state: createInitialTuiState(),
     width: 120,
     height: 24,
-    sourceLabel: "all",
-    rangeLabel: "recent 30d",
+    filtersSummary: "all · recent 30d · useful · ignore case",
   }));
 
   assert.match(screen, /Investigate quota drift/);
-  assert.match(screen, /source: all/);
-  assert.match(screen, /range: recent 30d/);
+  assert.match(screen, /search: quota/);
+  assert.match(screen, /all · recent 30d · useful · ignore case/);
   assert.match(screen, /2 threads/);
   assert.match(screen, /4 matches/);
   assert.doesNotMatch(screen, /resume:/);
   assert.doesNotMatch(screen, /open:/);
+});
+
+test("renderSearchTuiScreen shows a centered home search view before the first query", () => {
+  const screen = stripAnsi(renderSearchTuiScreen({
+    query: "",
+    results: {
+      hits: [],
+      page: 1,
+      pageSize: 5,
+      offset: 0,
+      hasMore: false,
+    },
+    state: createInitialTuiState(),
+    width: 100,
+    height: 24,
+    home: {
+      active: true,
+      query: "qu",
+    },
+    prompt: "search> qu",
+    searchHint: "global-search",
+    searchAssist: {
+      active: true,
+      selection: "input",
+      selectedIndex: 0,
+      historyEnabled: true,
+      recent: [{ kind: "recent", value: "quota" }, { kind: "recent", value: "deploy" }],
+      projects: [{ kind: "project", value: "codex-search" }],
+      previews: [{
+        sessionId: "thread-preview-1",
+        timestamp: "2026-04-16T10:00:00.000Z",
+        cwd: "/tmp/codex-search",
+        title: "quota exceeded on desktop launch",
+        source: "active",
+        messageCount: 3,
+        previewSnippet: "quota exceeded on desktop launch",
+        snippets: ["quota exceeded on desktop launch"],
+        matchPreviews: [{
+          kind: "user",
+          label: "User",
+          text: "quota exceeded on desktop launch",
+          timestamp: "2026-04-16T10:00:30.000Z",
+          secondaryText: null,
+        }],
+        matchCount: 1,
+        resumeCommand: "codex resume thread-preview-1",
+        deepLink: "codex://threads/thread-preview-1",
+      }],
+      previewLoading: false,
+    },
+  }));
+
+  assert.match(screen, /search local codex threads/i);
+  assert.match(screen, /recent/i);
+  assert.match(screen, /project/i);
+  assert.match(screen, /preview/i);
+  assert.match(screen, /\[1\].*quota exceeded on desktop launch/i);
+  assert.match(screen, /search>\s*qu/i);
+  assert.match(screen, /Enter search/i);
+  assert.match(screen, /1-5 open/i);
+  assert.match(screen, /f filters/i);
+});
+
+test("renderSearchTuiScreen places passive search context above the status bar", () => {
+  const results = createResults(2);
+  const screen = stripAnsi(renderSearchTuiScreen({
+    query: "quota",
+    results,
+    state: createInitialTuiState(),
+    width: 96,
+    height: 18,
+    filtersSummary: "active · 30d · useful · ignore case",
+  }));
+
+  const lines = screen.split("\n");
+  const searchLineIndex = lines.findIndex((line) => line.includes("search: quota"));
+  const statusLineIndex = lines.findIndex((line) => line.includes("Search complete"));
+  assert(searchLineIndex >= 0);
+  assert(statusLineIndex >= 0);
+  assert(searchLineIndex < statusLineIndex);
+  assert.match(lines[searchLineIndex] ?? "", /active · 30d · useful · ignore case/);
 });
 
 test("renderSearchTuiScreen expands the selected thread details in a responsive panel", async () => {
@@ -197,6 +279,8 @@ test("renderSearchTuiScreen expands the selected thread details in a responsive 
   }));
 
   assert.match(screen, /cwd:/);
+  assert.match(screen, /id: thread-active-aaa/);
+  assert.match(screen, /resume: codex resume thread-active-aaa/);
   assert.match(screen, /1\. Assistant/);
   assert.match(screen, /I found quota drift in the billing summary\./i);
   assert.match(screen, /2\. User/);
@@ -486,12 +570,34 @@ test("renderSearchTuiScreen condenses detail metadata and preserves body room", 
     height: 16,
   }));
 
-  assert.doesNotMatch(screen, /open:/);
-  assert.doesNotMatch(screen, /resume:/);
-  assert.match(screen, /cwd:/);
+  assert.match(screen, /id: thread-detail/);
+  assert.match(screen, /resume: codex resume thread-detail/);
   assert.match(screen, /quota detail body should keep enough room/);
   assert.match(screen, /show at least three wrapped lines/);
   assert.match(screen, /transcript area for the selected item/);
+});
+
+test("renderSearchTuiScreen shows archived detail state as read-only", () => {
+  const results = createThreadResults(1, {
+    sessionId: "thread-archived-detail",
+    source: "archived",
+  });
+  const screen = stripAnsi(renderSearchTuiScreen({
+    query: "detail",
+    results,
+    state: {
+      ...createInitialTuiState(),
+      expandedSessionId: "thread-archived-detail",
+      focus: "detail",
+    },
+    width: 100,
+    height: 18,
+  }));
+
+  assert.match(screen, /id: thread-archived-detail/);
+  assert.match(screen, /archived · read-only/);
+  assert.match(screen, /status: archived · not reopenable/);
+  assert.doesNotMatch(screen, /resume: codex resume thread-archived-detail/);
 });
 
 test("renderSearchTuiScreen shows the selected thread in details while list focus is active", () => {
@@ -580,10 +686,8 @@ test("renderSearchTuiScreen shows detail focus status and starts detail view fro
     },
     width: 140,
     height: 24,
-    cwdLabel: "chat",
   }));
 
-  assert.match(screen, /cwd: chat/);
   assert.match(screen, /detail 2\/2/);
   assert.match(screen, /1\. Assistant/);
   assert.match(screen, /› 2\. User/);
@@ -1030,7 +1134,224 @@ test("runSearchTui searches within detail previews with slash and n", async () =
 
   assert.equal(await run, 0);
   const output = stripAnsi(stdout.read());
-  assert.match(output, /\/alpha/);
+  assert.match(output, /detail> alpha/);
   assert.match(output, /detail 1\/5/);
   assert.match(output, /detail 4\/5/);
+});
+
+test("runSearchTui opens a global search prompt with s", async () => {
+  const results = createResults(2);
+  const stdin = createTuiStdin();
+  const stdout = createTuiStdout(100, 20);
+
+  const run = runSearchTui({
+    query: "quota",
+    results,
+    stdin,
+    stdout: stdout.stream,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "s", { name: "s" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "", { name: "escape" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "q", { name: "q" });
+
+  assert.equal(await run, 0);
+  assert.match(stripAnsi(stdout.read()), /search>\s*quota/);
+});
+
+test("runSearchTui opens preview results directly with number shortcuts from the search dock", async () => {
+  const stdin = createTuiStdin();
+  const stdout = createTuiStdout(110, 24);
+  const opened: string[] = [];
+
+  const run = runSearchTui({
+    query: "",
+    results: {
+      hits: [],
+      page: 1,
+      pageSize: 5,
+      offset: 0,
+      hasMore: false,
+    },
+    stdin,
+    stdout: stdout.stream,
+    onLoadSuggestions: async () => ({
+      recent: [{ kind: "recent", value: "quota" }],
+      projects: [{ kind: "project", value: "codex-search" }],
+    }),
+    onPreviewSearch: async () => [{
+      sessionId: "thread-preview-1",
+      timestamp: "2026-04-16T10:00:00.000Z",
+      cwd: "/tmp/codex-search",
+      title: "quota exceeded on desktop launch",
+      source: "active",
+      messageCount: 3,
+      previewSnippet: "quota exceeded on desktop launch",
+      snippets: ["quota exceeded on desktop launch"],
+      matchPreviews: [{
+        kind: "user",
+        label: "User",
+        text: "quota exceeded on desktop launch",
+        timestamp: "2026-04-16T10:00:30.000Z",
+        secondaryText: null,
+      }],
+      matchCount: 1,
+      resumeCommand: "codex resume thread-preview-1",
+      deepLink: "codex://threads/thread-preview-1",
+    }],
+    openHit: async (hit) => {
+      opened.push(hit.deepLink);
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  for (const char of ["q", "u"]) {
+    stdin.emit("keypress", char, { name: char });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  stdin.emit("keypress", "1", { name: "1" });
+
+  assert.equal(await run, 0);
+  assert.deepEqual(opened, ["codex://threads/thread-preview-1"]);
+});
+
+test("runSearchTui closes the filter overlay without restarting search when nothing changed", async () => {
+  const results = createResults(2);
+  const stdin = createTuiStdin();
+  const stdout = createTuiStdout(100, 20);
+  const started: string[] = [];
+
+  const run = runSearchTui({
+    query: "quota",
+    results,
+    stdin,
+    stdout: stdout.stream,
+    onStartSearch: async ({ query }) => {
+      started.push(query);
+      return {
+        query,
+        results,
+      };
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "f", { name: "f" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "", { name: "escape" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "q", { name: "q" });
+
+  assert.equal(await run, 0);
+  assert.deepEqual(started, []);
+  assert.match(stripAnsi(stdout.read()), /Filters/i);
+});
+
+test("runSearchTui opens a filter picker with f", async () => {
+  const results = createResults(2);
+  const stdin = createTuiStdin();
+  const stdout = createTuiStdout(100, 20);
+
+  const run = runSearchTui({
+    query: "quota",
+    results,
+    stdin,
+    stdout: stdout.stream,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "f", { name: "f" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "", { name: "escape" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "q", { name: "q" });
+
+  assert.equal(await run, 0);
+  assert.match(stripAnsi(stdout.read()), /Filters/);
+  assert.match(stripAnsi(stdout.read()), /Source/);
+  assert.match(stripAnsi(stdout.read()), /Range/);
+});
+
+test("runSearchTui starts a new search from the home screen", async () => {
+  const stdin = createTuiStdin();
+  const stdout = createTuiStdout(100, 20);
+  const requests: Array<{ query: string }> = [];
+
+  const run = runSearchTui({
+    query: "",
+    stdin,
+    stdout: stdout.stream,
+    onStartSearch: async ({ query, filters }) => {
+      requests.push({ query });
+      return {
+        query,
+        caseSensitive: filters.caseSensitive,
+        results: createResults(1, {
+          title: () => "Started from home",
+        }),
+      };
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  for (const char of ["q", "u", "o", "t", "a"]) {
+    stdin.emit("keypress", char, { name: char });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  stdin.emit("keypress", "\r", { name: "return" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  stdin.emit("keypress", "q", { name: "q" });
+
+  assert.equal(await run, 0);
+  assert.deepEqual(requests, [{ query: "quota" }]);
+  assert.match(stripAnsi(stdout.read()), /Started from home/);
+});
+
+test("runSearchTui applies filter changes to later searches", async () => {
+  const stdin = createTuiStdin();
+  const stdout = createTuiStdout(100, 20);
+  const requests: Array<{ query: string; sourceMode: string }> = [];
+
+  const run = runSearchTui({
+    query: "",
+    stdin,
+    stdout: stdout.stream,
+    onStartSearch: async ({ query, filters }) => {
+      requests.push({ query, sourceMode: filters.sourceMode });
+      return {
+        query,
+        caseSensitive: filters.caseSensitive,
+        results: createResults(1, {
+          title: () => `Source ${filters.sourceMode}`,
+        }),
+      };
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "f", { name: "f" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "\r", { name: "return" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "j", { name: "j" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "\r", { name: "return" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "", { name: "escape" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  for (const char of ["q", "u", "o", "t", "a"]) {
+    stdin.emit("keypress", char, { name: char });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  stdin.emit("keypress", "\r", { name: "return" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  stdin.emit("keypress", "q", { name: "q" });
+
+  assert.equal(await run, 0);
+  assert.deepEqual(requests, [{ query: "quota", sourceMode: "archived" }]);
+  assert.match(stripAnsi(stdout.read()), /Source archived/);
 });

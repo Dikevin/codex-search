@@ -45,24 +45,30 @@ export function printHelp(stream: NodeJS.WriteStream): void {
   printUsage(stream);
 
   stream.write("\nShared search flags:\n");
-  stream.write(`  --active              ${getFlagDescription("--active")} (default)\n`);
-  stream.write(`  --archived            ${getFlagDescription("--archived")}\n`);
-  stream.write(`  --all                 ${getFlagDescription("--all")}\n`);
+  stream.write("  --active | --archived | --all     source scope (default: --active)\n");
   stream.write("  --view <MODE>         useful (default), ops, protocol, or all\n");
   stream.write("  -D, --cwd <PATH>      Filter to threads whose recorded cwd is this path or a subdirectory\n");
-  stream.write("  --recent <duration>   Filter to recent thread history, for example 30m, 12h, 7d, 2w (default: 30d)\n");
-  stream.write(`  --start <YYYY-MM-DD>  ${getFlagDescription("--start")}\n`);
-  stream.write(`  --end <YYYY-MM-DD>    ${getFlagDescription("--end")}\n`);
-  stream.write(`  --all-time            ${getFlagDescription("--all-time")}\n`);
   stream.write(`  -i, --case-sensitive  ${getFlagDescription("--case-sensitive")}\n`);
 
+  stream.write("\nTime flags:\n");
+  stream.write("  --recent <duration>   Filter to recent thread history, for example 30m, 12h, 7d, 2w (default: 30d)\n");
+  stream.write("  --start <YYYY-MM-DD> --end <YYYY-MM-DD>\n");
+  stream.write("                          Explicit local date range\n");
+  stream.write(`  --all-time            ${getFlagDescription("--all-time")}\n`);
+
   stream.write("\nJSON flags:\n");
-  stream.write(`  --json                ${getFlagDescription("--json")}\n`);
-  stream.write(`  --jsonl               ${getFlagDescription("--jsonl")}\n`);
+  stream.write("  --json | --jsonl      machine-readable output\n");
   stream.write(`  -n, --limit <N>       ${getFlagDescription("--limit")} (default: 5)\n`);
-  stream.write("  -p, --page <N>        JSON mode only. 1-based page number\n");
-  stream.write("  -o, --offset <N>      JSON mode only. 0-based result offset\n");
+  stream.write("  -p, --page <N> | -o, --offset <N>\n");
+  stream.write("                          JSON pagination\n");
   stream.write(`  --with-total          ${getFlagDescription("--with-total")}\n`);
+
+  stream.write("\nHistory:\n");
+  stream.write("  codexs history        list recent explicit searches\n");
+  stream.write("  codexs history --json emit machine-readable history output\n");
+  stream.write("  codexs history clear  clear stored search history\n");
+  stream.write("  codexs history enable enable search history\n");
+  stream.write("  codexs history disable disable search history\n");
 
   stream.write("\nGlobal flags:\n");
   stream.write(`  --root-dir <PATH>     ${getFlagDescription("--root-dir")} for testing\n`);
@@ -73,6 +79,7 @@ export function printHelp(stream: NodeJS.WriteStream): void {
   stream.write("  Use -- before a keyword that starts with -, for example: codexs -- --all\n");
 
   stream.write("\nNotes:\n");
+  stream.write("  On a TTY, bare codexs opens the interactive home screen.\n");
   stream.write("  Non-TTY output requires --json or --jsonl.\n");
   stream.write("  Archived matches are searchable but cannot be reopened directly.\n");
   stream.write("  Unknown commands and close flag typos include a suggestion when available.\n");
@@ -176,6 +183,20 @@ ${completionTargets.map((target) => `      '${target}:${target} completion scrip
     return 0
   fi
 
+  if [[ "$command" == "history" ]]; then
+    if [[ "$current_word" == -* ]]; then
+      _describe -t history-flag 'history flag' \\
+        ${listCommandFlagsWithAliases("history").map(describeFlag).map((flag) => `'${flag}'`).join(" ")}
+      return 0
+    fi
+
+    _describe -t history-action 'history action' \\
+      'clear:clear stored search history' \\
+      'enable:enable search history' \\
+      'disable:disable search history'
+    return 0
+  fi
+
   command_flags=()
   case "$command" in
     lucky)
@@ -241,6 +262,11 @@ export function buildCompletionBashScript(): string {
 
   if [[ "\${command}" == "completion" ]]; then
     COMPREPLY=( $(compgen -W "${completionTargets} ${completionFlags}" -- "\${cur}") )
+    return 0
+  fi
+
+  if [[ "\${command}" == "history" ]]; then
+    COMPREPLY=( $(compgen -W "clear enable disable ${[...listGlobalFlagsWithAliases(), ...listCommandFlagsWithAliases("history")].join(" ")}" -- "\${cur}") )
     return 0
   fi
 

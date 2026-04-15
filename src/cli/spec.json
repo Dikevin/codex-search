@@ -47,13 +47,15 @@
         "--root-dir"
       ],
       "helpUsages": [
+        "codexs [search-flags]",
         "codexs <keyword>",
-        "codexs <keyword> --json [--page <N>] [--limit <N>] [--offset <N>] [--with-total]",
+        "codexs lucky <keyword>",
+        "codexs <keyword> --json [json-flags]",
         "codexs <keyword> --jsonl",
         "codexs -- <keyword-starting-with-dash>"
       ],
       "usageErrors": {
-        "default": "codexs <keyword> [shared-search-flags] [--json|--jsonl]"
+        "default": "codexs <keyword> [search-flags] [--json|--jsonl]"
       }
     },
     {
@@ -76,6 +78,20 @@
       ],
       "usageErrors": {
         "default": "codexs lucky <keyword> [shared-search-flags]"
+      }
+    },
+    {
+      "name": "history",
+      "flags": ["--json", "--root-dir"],
+      "helpUsages": [
+        "codexs history",
+        "codexs history --json",
+        "codexs history clear",
+        "codexs history enable",
+        "codexs history disable"
+      ],
+      "usageErrors": {
+        "default": "codexs history [--json|clear|enable|disable]"
       }
     },
     {

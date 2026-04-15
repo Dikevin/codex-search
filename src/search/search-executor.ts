@@ -32,6 +32,7 @@ export interface SearchFileBatchOptions {
   concurrency: number;
   onFileSearch?: (event: { filePath: string; mode: "stream"; engine: "worker" | "local" }) => void;
   onResult?: (result: SearchFileHitResult) => void;
+  onWarning?: (warning: { type: "file_read_failed"; filePath: string; code: string | null; message: string }) => void;
   executor: SearchExecutor;
 }
 
@@ -189,6 +190,16 @@ async function* searchFilesInterleaved(
           queue.push(result);
         })
         .catch((error) => {
+          if (isRecoverableFileError(error)) {
+            options.onWarning?.({
+              type: "file_read_failed",
+              filePath: file.filePath,
+              code: getErrorCode(error),
+              message: formatSearchErrorMessage(error),
+            });
+            return;
+          }
+
           workerError = error;
         })
         .finally(() => {
@@ -220,6 +231,21 @@ async function* searchFilesInterleaved(
   if (workerError) {
     throw workerError;
   }
+}
+
+function isRecoverableFileError(error: unknown): boolean {
+  const code = getErrorCode(error);
+  return code === "EACCES" || code === "EPERM" || code === "ENOENT";
+}
+
+function getErrorCode(error: unknown): string | null {
+  return typeof (error as NodeJS.ErrnoException | null)?.code === "string"
+    ? (error as NodeJS.ErrnoException).code ?? null
+    : null;
+}
+
+function formatSearchErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function runWorkerTask(

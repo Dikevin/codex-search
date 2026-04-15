@@ -15,8 +15,10 @@ export const TUI_LAYOUT = {
   panelMinHeight: 12,
   stackedListRatio: 0.35,
   minStackedListHeight: 3,
-  detailMetadataBaseLines: 2,
-  detailMetadataCwdMinHeight: 6,
+  detailMetadataTitleMinHeight: 2,
+  detailMetadataIdMinHeight: 3,
+  detailMetadataActionMinHeight: 4,
+  detailMetadataCwdMinHeight: 9,
   sideBySideListRatio: 0.4,
   minSideBySideListWidth: 30,
   minSideBySideDetailWidth: 28,
@@ -79,12 +81,29 @@ export function getSideBySidePaneWidths(width: number): { leftWidth: number; rig
   return { leftWidth, rightWidth };
 }
 
-export function getDetailMetadataLineCount(height: number, hasCwd: boolean): number {
-  if (!hasCwd) {
-    return Math.min(height, TUI_LAYOUT.detailMetadataBaseLines);
+export function getDetailMetadataLineCount(
+  height: number,
+  options: { hasCwd: boolean; hasActionLine: boolean },
+): number {
+  let lines = 1;
+
+  if (height >= TUI_LAYOUT.detailMetadataTitleMinHeight) {
+    lines += 1;
   }
 
-  return Math.min(height, height >= TUI_LAYOUT.detailMetadataCwdMinHeight ? 3 : 2);
+  if (height >= TUI_LAYOUT.detailMetadataIdMinHeight) {
+    lines += 1;
+  }
+
+  if (options.hasActionLine && height >= TUI_LAYOUT.detailMetadataActionMinHeight) {
+    lines += 1;
+  }
+
+  if (options.hasCwd && height >= TUI_LAYOUT.detailMetadataCwdMinHeight) {
+    lines += 1;
+  }
+
+  return Math.min(height, lines);
 }
 
 export function getDetailPanelHeightForLayout(
@@ -108,6 +127,9 @@ export function getDetailPanelHeightForLayout(
 }
 
 export function getDetailPreviewPageStep(detailHeight: number, hasCwd = true): number {
-  const previewHeight = Math.max(0, detailHeight - getDetailMetadataLineCount(detailHeight, hasCwd));
+  const previewHeight = Math.max(0, detailHeight - getDetailMetadataLineCount(detailHeight, {
+    hasCwd,
+    hasActionLine: true,
+  }));
   return Math.max(1, Math.floor(previewHeight / 4));
 }

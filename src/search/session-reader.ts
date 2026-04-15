@@ -42,12 +42,17 @@ export interface SearchArchivedSessionsOptions {
   onSessionSummary?: (summary: SearchSessionSummary) => void;
   onFileSearch?: (event: { filePath: string; mode: "stream"; engine: "worker" | "local" }) => void;
   onProgress?: (progress: SearchProgress) => void;
+  onWarning?: (warning: SearchWarning) => void;
 }
 
 export interface SearchSessionSummary {
   sessionId: string;
   messageCount: number;
 }
+
+export type SearchWarning =
+  | { type: "file_read_failed"; filePath: string; code: string | null; message: string }
+  | { type: "thread_title_unavailable"; dbPath: string; code: string | null; message: string };
 
 export interface SearchHit {
   sessionId: string;
@@ -172,7 +177,7 @@ export async function* streamSearchHits(
   const view = options.view ?? "useful";
   const caseSensitive = options.caseSensitive ?? false;
   const timeRange = resolveTimeRange(options);
-  const threadTitles = options.threadTitles ?? await readThreadTitles(codexHomeDir);
+  const threadTitles = options.threadTitles ?? await readThreadTitles(codexHomeDir, options.onWarning);
   const concurrency = resolveConcurrency(options.concurrency);
   const plans: Array<{
     source: SearchSource;
@@ -244,6 +249,7 @@ export async function* streamSearchHits(
         concurrency,
         onFileSearch: handleFileSearch,
         onResult: recordSearchResult,
+        onWarning: (warning) => options.onWarning?.(warning),
         executor,
       })) {
       const hits = withThreadTitlesForHits(result.hits, threadTitles);
@@ -485,7 +491,10 @@ function parseFileDateMs(filePath: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-async function readThreadTitles(codexHomeDir: string): Promise<Map<string, string>> {
+async function readThreadTitles(
+  codexHomeDir: string,
+  onWarning?: (warning: SearchWarning) => void,
+): Promise<Map<string, string>> {
   const dbPath = join(codexHomeDir, "state_5.sqlite");
 
   try {
@@ -500,7 +509,15 @@ async function readThreadTitles(codexHomeDir: string): Promise<Map<string, strin
     return new Map(rows
       .filter((row): row is { id: string; title: string } => Boolean(row.id && row.title))
       .map((row) => [row.id, row.title]));
-  } catch {
+  } catch (error) {
+    onWarning?.({
+      type: "thread_title_unavailable",
+      dbPath,
+      code: typeof (error as NodeJS.ErrnoException | null)?.code === "string"
+        ? (error as NodeJS.ErrnoException).code ?? null
+        : null,
+      message: error instanceof Error ? error.message : String(error),
+    });
     return new Map();
   }
 }

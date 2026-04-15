@@ -8,12 +8,13 @@ import {
 } from "./spec.js";
 
 export interface ParsedArgs {
-  mode: "search" | "lucky" | "completion";
+  mode: "search" | "lucky" | "completion" | "history";
   sourceMode: "all" | "active" | "archived";
   sourceModeExplicit: boolean;
   query: string | null;
   completionShell: "zsh" | "bash" | null;
   completionAction: "shell" | "durations" | "cwds" | null;
+  historyAction: "list" | "clear" | "enable" | "disable";
   json: boolean;
   jsonl: boolean;
   view: SearchViewMode;
@@ -34,12 +35,14 @@ export interface ParsedArgs {
 }
 
 export function parseArgs(argv: string[]): ParsedArgs {
-  let mode: "search" | "lucky" | "completion" = "search";
+  let mode: "search" | "lucky" | "completion" | "history" = "search";
   let sourceMode: "all" | "active" | "archived" = "active";
   let sourceModeExplicit = false;
   let query: string | null = null;
   let completionShell: "zsh" | "bash" | null = null;
   let completionAction: "shell" | "durations" | "cwds" | null = null;
+  let historyAction: ParsedArgs["historyAction"] = "list";
+  let historyActionSet = false;
   let json = false;
   let jsonl = false;
   let view: SearchViewMode = "useful";
@@ -73,8 +76,16 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
 
     if (positionalOnly) {
-      if (query !== null || mode === "completion") {
-        throw new Error(`Usage: ${getUsage(mode === "lucky" ? "lucky" : mode === "completion" ? "completion" : "search")}`);
+      if (query !== null || mode === "completion" || mode === "history") {
+        throw new Error(`Usage: ${getUsage(
+          mode === "lucky"
+            ? "lucky"
+            : mode === "completion"
+              ? "completion"
+              : mode === "history"
+                ? "history"
+                : "search",
+        )}`);
       }
 
       query = arg;
@@ -91,12 +102,20 @@ export function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "history" && query === null && index === 0) {
+      mode = "history";
+      continue;
+    }
+
     if (arg === "--json") {
       json = true;
       continue;
     }
 
     if (arg === "--jsonl") {
+      if (mode === "history") {
+        throw new Error('History mode does not support "--jsonl".');
+      }
       jsonl = true;
       continue;
     }
@@ -133,6 +152,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
 
     if (arg === "--view") {
+      if (mode === "history") {
+        throw new Error(`Unknown option "${arg}".`);
+      }
       const value = argv[index + 1];
       if (!value) {
         throw new Error(`Usage: ${getUsage()}`);
@@ -158,6 +180,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
 
     if (arg === "-n" || arg === "--limit" || arg === "--page-size") {
+      if (mode === "history") {
+        throw new Error(`Unknown option "${arg}".`);
+      }
       const value = argv[index + 1];
       if (!value) {
         throw new Error(`Usage: ${getUsage()}`);
@@ -177,6 +202,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
 
     if (arg === "-p" || arg === "--page") {
+      if (mode === "history") {
+        throw new Error(`Unknown option "${arg}".`);
+      }
       const value = argv[index + 1];
       if (!value) {
         throw new Error(`Usage: ${getUsage()}`);
@@ -189,6 +217,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
 
     if (arg === "-o" || arg === "--offset") {
+      if (mode === "history") {
+        throw new Error(`Unknown option "${arg}".`);
+      }
       const value = argv[index + 1];
       if (!value) {
         throw new Error(`Usage: ${getUsage()}`);
@@ -205,6 +236,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
 
     if (arg === "--with-total") {
+      if (mode === "history") {
+        throw new Error(`Unknown option "${arg}".`);
+      }
       withTotal = true;
       paginationExplicit = true;
       continue;
@@ -222,6 +256,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
 
     if (arg === "-D" || arg === "--cwd") {
+      if (mode === "history") {
+        throw new Error(`Unknown option "${arg}".`);
+      }
       const value = argv[index + 1];
       if (!value) {
         throw new Error(`Usage: ${getUsage()}`);
@@ -233,24 +270,36 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
 
     if (arg === "--active") {
+      if (mode === "history") {
+        throw new Error(`Unknown option "${arg}".`);
+      }
       sourceMode = parseSourceMode(sourceMode, sourceModeExplicit, "active");
       sourceModeExplicit = true;
       continue;
     }
 
     if (arg === "--archived") {
+      if (mode === "history") {
+        throw new Error(`Unknown option "${arg}".`);
+      }
       sourceMode = parseSourceMode(sourceMode, sourceModeExplicit, "archived");
       sourceModeExplicit = true;
       continue;
     }
 
     if (arg === "--all") {
+      if (mode === "history") {
+        throw new Error(`Unknown option "${arg}".`);
+      }
       sourceMode = parseSourceMode(sourceMode, sourceModeExplicit, "all");
       sourceModeExplicit = true;
       continue;
     }
 
     if (arg === "--recent") {
+      if (mode === "history") {
+        throw new Error(`Unknown option "${arg}".`);
+      }
       const value = argv[index + 1];
       if (!value) {
         throw new Error(`Usage: ${getUsage()}`);
@@ -266,6 +315,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
 
     if (arg === "--start") {
+      if (mode === "history") {
+        throw new Error(`Unknown option "${arg}".`);
+      }
       const value = argv[index + 1];
       if (!value) {
         throw new Error(`Usage: ${getUsage()}`);
@@ -281,6 +333,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
 
     if (arg === "--end") {
+      if (mode === "history") {
+        throw new Error(`Unknown option "${arg}".`);
+      }
       const value = argv[index + 1];
       if (!value) {
         throw new Error(`Usage: ${getUsage()}`);
@@ -296,11 +351,28 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
 
     if (arg === "--all-time") {
+      if (mode === "history") {
+        throw new Error(`Unknown option "${arg}".`);
+      }
       if (recent !== null || start !== null || end !== null) {
         throw new Error('"--all-time" cannot be combined with "--recent", "--start", or "--end".');
       }
 
       allTime = true;
+      continue;
+    }
+
+    if (mode === "history" && !arg.startsWith("-")) {
+      if (historyActionSet) {
+        throw new Error(`Usage: ${getUsage("history")}`);
+      }
+
+      if (!isHistoryAction(arg)) {
+        throw new Error(`Usage: ${getUsage("history")}`);
+      }
+
+      historyAction = arg;
+      historyActionSet = true;
       continue;
     }
 
@@ -326,6 +398,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (mode === "history") {
+      throw new Error(`Usage: ${getUsage("history")}`);
+    }
+
     if (query !== null) {
       const commandSuggestion = suggestCommand(query);
       if (commandSuggestion) {
@@ -349,6 +425,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     query,
     completionShell,
     completionAction,
+    historyAction,
     json,
     jsonl,
     view,
@@ -367,6 +444,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
     help,
     version,
   };
+}
+
+function isHistoryAction(value: string): value is ParsedArgs["historyAction"] {
+  return value === "list" || value === "clear" || value === "enable" || value === "disable";
 }
 
 function isSearchViewMode(value: string): value is SearchViewMode {

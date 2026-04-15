@@ -30,6 +30,7 @@ import {
 } from "./text.js";
 import type { RenderSearchTuiScreenOptions, TuiState } from "./types.js";
 import type { SearchProgress } from "../search/view-filter.js";
+import { getTuiFilterRows } from "./search-filters.js";
 
 interface SessionColumn {
   key: "time" | "source" | "title" | "matches" | "cwd";
@@ -66,39 +67,64 @@ export function renderSearchTuiScreen(options: RenderSearchTuiScreenOptions): st
   const expanded = getExpandedSessionForState(sessions, clampedState);
   const panelLines: string[] = [];
   const nowMs = options.nowMs ?? Date.now();
+  const home = options.home ?? (
+    options.query.trim() === "" && options.results.hits.length === 0
+      ? {
+        active: true,
+        query: "",
+      }
+      : null
+  );
+  const searchDockLines = renderSearchDockLines(
+    innerWidth,
+    detailSearchPrompt(options.prompt ?? null, options.searchHint ?? null),
+    options.query,
+    options.filtersSummary ?? "",
+  );
 
   panelLines.push(`${ANSI.bold}${ANSI.cyan}codexs${ANSI.reset}  ${ANSI.dim}thread search${ANSI.reset}`);
-  panelLines.push(truncate(`keyword: ${options.query}`, innerWidth));
-  panelLines.push(divider(innerWidth));
+  let bodyLines = home?.active
+    ? renderHomeBodyLines(innerWidth, bodyHeight, home, options.searchAssist ?? null)
+    : sessions.length === 0
+      ? fitLines([
+        options.searching ? "Searching..." : "No matches found.",
+        "",
+      ], bodyHeight)
+      : renderBodyLines(
+        sessions,
+        clampedState,
+        expanded,
+        innerWidth,
+        bodyHeight,
+        options.query,
+        options.caseSensitive ?? false,
+        nowMs,
+        options.searchAssist ?? null,
+      );
 
-  if (sessions.length === 0) {
-    panelLines.push(...fitLines([
-      options.searching ? "Searching..." : "No matches found.",
-      "",
-    ], bodyHeight));
-  } else {
-    panelLines.push(...renderBodyLines(
-      sessions,
-      clampedState,
-      expanded,
-      innerWidth,
-      bodyHeight,
-      options.query,
-      options.caseSensitive ?? false,
-      nowMs,
-    ));
+  if (options.filterPicker?.active) {
+    bodyLines = overlayBodyLines(bodyLines, renderFilterPickerOverlayLines(innerWidth, Math.min(bodyHeight, 8), options.filterPicker));
   }
 
+  panelLines.push(...bodyLines);
   panelLines.push(divider(innerWidth));
+  panelLines.push(...searchDockLines);
   panelLines.push(formatStatusLine(sessions, options.results, clampedState, innerWidth, innerHeight, nowMs, {
     searching: options.searching ?? false,
-    sourceLabel: options.sourceLabel,
-    rangeLabel: options.rangeLabel,
-    cwdLabel: options.cwdLabel,
     progress: options.progress ?? null,
-    prompt: options.prompt ?? null,
+    home,
+    filterPicker: options.filterPicker ?? null,
+    searchAssist: options.searchAssist ?? null,
   }));
-  panelLines.push(renderHintBar(innerWidth, options.searchHint ?? null, clampedState, Boolean(expanded)));
+  panelLines.push(renderHintBar(
+    innerWidth,
+    options.searchHint ?? null,
+    clampedState,
+    Boolean(expanded),
+    home,
+    options.filterPicker ?? null,
+    options.searchAssist ?? null,
+  ));
 
   return renderPanelScreen(options.width, options.height, frame, fitLines(panelLines, innerHeight));
 }
@@ -112,14 +138,87 @@ function renderBodyLines(
   query: string,
   caseSensitive: boolean,
   nowMs: number,
+  searchAssist: RenderSearchTuiScreenOptions["searchAssist"],
 ): string[] {
+  const assistLines = searchAssist?.active
+    ? renderSearchAssistLines(width, bodyHeight, searchAssist)
+    : [];
+  const contentHeight = Math.max(0, bodyHeight - assistLines.length);
+
   if (expanded) {
-    return usesWideDetailsLayout(width)
-      ? renderSideBySideBodyLines(sessions, state, width, bodyHeight, expanded, query, caseSensitive, nowMs)
-      : renderStackedBodyLines(sessions, state, width, bodyHeight, expanded, query, caseSensitive, nowMs);
+    const contentLines = usesWideDetailsLayout(width)
+      ? renderSideBySideBodyLines(sessions, state, width, contentHeight, expanded, query, caseSensitive, nowMs)
+      : renderStackedBodyLines(sessions, state, width, contentHeight, expanded, query, caseSensitive, nowMs);
+    return fitLines([...contentLines, ...assistLines], bodyHeight);
   }
 
-  return renderListOnlyBodyLines(sessions, state, width, bodyHeight, query, caseSensitive, nowMs);
+  const contentLines = renderListOnlyBodyLines(sessions, state, width, contentHeight, query, caseSensitive, nowMs);
+  return fitLines([...contentLines, ...assistLines], bodyHeight);
+}
+
+function renderHomeBodyLines(
+  width: number,
+  height: number,
+  home: NonNullable<RenderSearchTuiScreenOptions["home"]>,
+  searchAssist: RenderSearchTuiScreenOptions["searchAssist"],
+): string[] {
+  const assistLines = searchAssist?.active
+    ? renderSearchAssistLines(width, height, searchAssist)
+    : [];
+  const contentHeight = Math.max(0, height - assistLines.length);
+  const centerLines = [
+    "",
+    `${ANSI.bold}${ANSI.cyan}codexs${ANSI.reset}`,
+    width >= 36 ? `${ANSI.dim}search local codex threads${ANSI.reset}` : null,
+  ].filter(Boolean) as string[];
+
+  const topPadding = Math.max(0, Math.floor((contentHeight - centerLines.length) / 2));
+  const lines = [
+    ...Array.from({ length: topPadding }, () => ""),
+    ...centerLines.map((line) => centerLine(line, width)),
+  ];
+
+  return fitLines([...fitLines(lines, contentHeight), ...assistLines], height);
+}
+
+function renderFilterPickerOverlayLines(
+  width: number,
+  height: number,
+  picker: NonNullable<RenderSearchTuiScreenOptions["filterPicker"]>,
+): string[] {
+  const rows = picker.rows.length > 0 ? picker.rows : getTuiFilterRows({
+    sourceMode: "active",
+    view: "useful",
+    caseSensitive: false,
+    timeFilter: { kind: "recent", value: "30d" },
+  });
+  const labelWidth = Math.max(...rows.map((row) => row.label.length), 6);
+  if (picker.mode === "values") {
+    const title = rows[picker.selected]?.label ?? "Filter";
+    const lines = [
+      centerLine(`${ANSI.bold}${title}${ANSI.reset}`, width),
+      "",
+      ...(picker.valueOptions ?? []).map((value, index) => {
+        const prefix = index === picker.valueSelected ? `${ANSI.inverse}› ` : "  ";
+        const suffix = index === picker.valueSelected ? ANSI.reset : "";
+        return centerLine(truncate(`${prefix}${value}${suffix}`, Math.max(1, width - 4)), width);
+      }),
+    ];
+    return fitLines(lines, height);
+  }
+
+  const lines = [
+    centerLine(`${ANSI.bold}Filters${ANSI.reset}`, width),
+    "",
+    ...rows.map((row, index) => {
+      const prefix = index === picker.selected ? `${ANSI.inverse}› ` : "  ";
+      const suffix = index === picker.selected ? ANSI.reset : "";
+      const body = `${row.label.padEnd(labelWidth, " ")}  ${row.value}`;
+      return centerLine(truncate(`${prefix}${body}${suffix}`, Math.max(1, width - 4)), width);
+    }),
+  ];
+
+  return fitLines(lines, height);
 }
 
 function renderListOnlyBodyLines(
@@ -450,28 +549,146 @@ function renderDetailHeader(
   caseSensitive: boolean,
 ): string[] {
   const lines: string[] = [];
+  const reopenable = isReopenableSession(session);
+  const metadataLineCount = getDetailMetadataLineCount(height, {
+    hasCwd: Boolean(session.cwd),
+    hasActionLine: true,
+  });
   const summaryParts = [
     `${ANSI.bold}Details${ANSI.reset}`,
     `${ANSI.dim}${session.matchCount} ${session.matchCount === 1 ? "match" : "matches"}${ANSI.reset}`,
     session.messageCount !== null ? `${ANSI.dim}${session.messageCount} msgs${ANSI.reset}` : null,
-    `${ANSI.dim}${session.source}${ANSI.reset}`,
+    `${ANSI.dim}${formatSessionAccess(session)}${ANSI.reset}`,
     `${ANSI.dim}detail ${Math.min(state.detailSelected + 1, session.matchPreviews.length)}/${session.matchPreviews.length}${ANSI.reset}`,
     `${ANSI.dim}${formatShortTimestamp(session.timestamp)}${ANSI.reset}`,
   ].filter(Boolean) as string[];
   lines.push(truncate(summaryParts.join("  "), width));
 
-  if (height >= 2) {
+  if (metadataLineCount >= 2) {
     const titlePrefix = `${ANSI.magenta}title:${ANSI.reset} `;
     const titleWidth = Math.max(1, width - displayWidth(stripAnsi(titlePrefix)));
     const title = truncatePlain(sanitizeInlineText(session.title || session.sessionId), titleWidth);
     lines.push(truncate(`${titlePrefix}${highlightText(title, query, caseSensitive)}`, width));
   }
 
-  if (session.cwd && getDetailMetadataLineCount(height, true) >= 3) {
+  if (metadataLineCount >= 3) {
+    lines.push(truncate(`${ANSI.magenta}id:${ANSI.reset} ${sanitizeInlineText(session.sessionId)}`, width));
+  }
+
+  if (metadataLineCount >= 4) {
+    lines.push(truncate(buildDetailActionLine(session, reopenable), width));
+  }
+
+  if (session.cwd && metadataLineCount >= 5) {
     lines.push(truncate(`${ANSI.magenta}cwd:${ANSI.reset} ${sanitizeInlineText(session.cwd)}`, width));
   }
 
   return lines;
+}
+
+function detailSearchPrompt(prompt: string | null, searchHint: string | null): string | null {
+  if (!prompt) {
+    return null;
+  }
+
+  return searchHint === "detail-search" ? prompt : prompt;
+}
+
+function renderSearchDockLines(
+  width: number,
+  prompt: string | null,
+  query: string,
+  filtersSummary: string,
+): string[] {
+  const left = prompt ? prompt : `search: ${query}`;
+  if (!filtersSummary) {
+    return [truncate(left, width), ""];
+  }
+
+  const leftWidth = displayWidth(stripAnsi(left));
+  const rightWidth = displayWidth(stripAnsi(filtersSummary));
+  if (leftWidth + 2 + rightWidth <= width) {
+    return [
+      `${left}${" ".repeat(Math.max(1, width - leftWidth - rightWidth))}${ANSI.dim}${truncate(filtersSummary, rightWidth)}${ANSI.reset}`,
+      "",
+    ];
+  }
+
+  return [
+    truncate(left, width),
+    `${ANSI.dim}${truncate(filtersSummary, width)}${ANSI.reset}`,
+  ];
+}
+
+function renderSearchAssistLines(
+  width: number,
+  maxHeight: number,
+  searchAssist: NonNullable<RenderSearchTuiScreenOptions["searchAssist"]>,
+): string[] {
+  const lines: string[] = [];
+  const pushSection = (title: string, items: string[]) => {
+    if (items.length === 0) {
+      return;
+    }
+
+    if (lines.length > 0) {
+      lines.push("");
+    }
+
+    lines.push(`${ANSI.dim}${title}${ANSI.reset}`);
+    lines.push(...items);
+  };
+
+  const selectedGlobalIndex = searchAssist.selection === "list" ? searchAssist.selectedIndex : -1;
+  let runningIndex = 0;
+
+  const previewLines = searchAssist.previews.map((preview, index) => {
+    const selected = selectedGlobalIndex === runningIndex;
+    runningIndex += 1;
+    const prefix = selected ? `${ANSI.inverse}› ` : "  ";
+    const suffix = selected ? ANSI.reset : "";
+    const label = `${ANSI.dim}[${index + 1}]${ANSI.reset} ${formatShortTimestamp(preview.timestamp)}  ${sanitizeInlineText(preview.title || preview.sessionId)}`;
+    return truncate(`${prefix}${label}${suffix}`, width);
+  });
+
+  const recentLines = searchAssist.recent.map((entry) => {
+    const selected = selectedGlobalIndex === runningIndex;
+    runningIndex += 1;
+    const prefix = selected ? `${ANSI.inverse}› ` : "  ";
+    const suffix = selected ? ANSI.reset : "";
+    return truncate(`${prefix}${sanitizeInlineText(entry.value)}${suffix}`, width);
+  });
+
+  const projectLines = searchAssist.projects.map((entry) => {
+    const selected = selectedGlobalIndex === runningIndex;
+    runningIndex += 1;
+    const prefix = selected ? `${ANSI.inverse}› ` : "  ";
+    const suffix = selected ? ANSI.reset : "";
+    return truncate(`${prefix}${sanitizeInlineText(entry.value)}${suffix}`, width);
+  });
+
+  if (searchAssist.previewLoading || previewLines.length > 0) {
+    pushSection(
+      "preview",
+      searchAssist.previewLoading && previewLines.length === 0
+        ? [`${ANSI.dim}  previewing…${ANSI.reset}`]
+        : previewLines,
+    );
+  }
+  pushSection("recent", recentLines);
+  pushSection("project", projectLines);
+
+  const maxLines = Math.max(0, Math.min(maxHeight, width >= 88 ? 11 : 8));
+  return fitLines(lines.slice(0, maxLines), Math.min(maxHeight, Math.max(lines.length, 0)));
+}
+
+function overlayBodyLines(baseLines: string[], overlayLines: string[]): string[] {
+  const next = [...baseLines];
+  const start = Math.max(0, next.length - overlayLines.length);
+  for (let index = 0; index < overlayLines.length; index += 1) {
+    next[start + index] = overlayLines[index] ?? "";
+  }
+  return next;
 }
 
 function renderHintBar(
@@ -479,13 +696,39 @@ function renderHintBar(
   searchHint: string | null,
   state: TuiState,
   expanded: boolean,
+  home: RenderSearchTuiScreenOptions["home"],
+  filterPicker: RenderSearchTuiScreenOptions["filterPicker"],
+  searchAssist: RenderSearchTuiScreenOptions["searchAssist"],
 ): string {
+  if (filterPicker?.active) {
+    if (filterPicker.mode === "values") {
+      return truncate([
+        formatKey("Enter"), " apply",
+        "  ", formatKey("Esc"), " back",
+      ].join(""), width);
+    }
+
+    return truncate([
+      formatKey("Enter"), " select",
+      "  ", formatKey("Esc"), " close",
+      "  ", formatKey("q"), " quit",
+    ].join(""), width);
+  }
+
   if (searchHint) {
-    const searchModeHint = [
-      formatKey("Enter"), " find",
-      "  ", formatKey("Esc"), " cancel",
-      "  ", formatKey("Backspace"), " delete",
-    ].join("");
+    const searchModeHint = searchHint === "global-search"
+      ? [
+        formatKey("Enter"), " search",
+        searchAssist?.previews.length ? `  ${formatKey("1-5")} open` : `  ${formatKey("^O")} lucky`,
+        "  ", formatKey("Tab"), " accept",
+        "  ", formatKey("f"), " filters",
+        "  ", formatKey("Esc"), home?.active ? "quit" : "cancel",
+      ].join("")
+      : [
+        formatKey("Enter"), " find",
+        "  ", formatKey("Esc"), " cancel",
+        "  ", formatKey("Backspace"), " delete",
+      ].join("");
     return truncate(searchModeHint, width);
   }
 
@@ -527,8 +770,11 @@ function renderHintBar(
     : [
       formatKey("Enter"), " open",
       "  ", formatKey("o"), " stay",
+      "  ", formatKey("^O"), " lucky",
       "  ", formatKey("r"), " resume",
       "  ", formatKey("Space"), " detail",
+      "  ", formatKey("s"), " search",
+      "  ", formatKey("f"), " filters",
       "  ", formatKey("q"), " quit",
     ].join("");
   const fullHint = expanded
@@ -544,12 +790,14 @@ function renderHintBar(
         "  ", formatKey("j/k"), " move",
         "  ", formatKey("^d/^u"), " page",
         "  ", formatKey("/"), " search",
+        "  ", formatKey("f"), " filters",
       ].join("")
     : [
       priorityHint,
       "  ", formatKey("j/k"), " move",
       "  ", formatKey("^d/^u"), " page",
       "  ", formatKey("g/G"), " jump",
+      "  ", formatKey("f"), " filters",
     ].join("");
 
   if (displayWidth(stripAnsi(fullHint)) <= width) {
@@ -576,23 +824,52 @@ function formatStatusLine(
   nowMs: number,
   options: {
     searching: boolean;
-    sourceLabel?: string;
-    rangeLabel?: string;
-    cwdLabel?: string;
     progress: SearchProgress | null;
-    prompt: string | null;
+    home: RenderSearchTuiScreenOptions["home"];
+    filterPicker: RenderSearchTuiScreenOptions["filterPicker"];
+    searchAssist: RenderSearchTuiScreenOptions["searchAssist"];
   },
 ): string {
-  if (options.prompt) {
-    return `${ANSI.cyan}${truncate(options.prompt, width)}${ANSI.reset}`;
-  }
-
   if (state.statusMessage) {
     return `${ANSI.yellow}${truncate(state.statusMessage, width)}${ANSI.reset}`;
   }
 
+  if (options.filterPicker?.active) {
+    return `${ANSI.dim}${truncate("Filters", width)}${ANSI.reset}`;
+  }
+
+  if (options.searchAssist?.active) {
+    const assistStatus = formatSearchAssistStatus(options.searchAssist, options.home);
+    return `${ANSI.dim}${truncate(assistStatus, width)}${ANSI.reset}`;
+  }
+
   const summary = formatSummary(sessions, results, state, width, height, nowMs, options);
   return `${ANSI.dim}${truncate(summary, width)}${ANSI.reset}`;
+}
+
+function centerLine(line: string, width: number): string {
+  const visibleWidth = displayWidth(stripAnsi(line));
+  const padding = Math.max(0, Math.floor((width - visibleWidth) / 2));
+  return `${" ".repeat(padding)}${truncate(line, width)}`;
+}
+
+function formatSearchAssistStatus(
+  searchAssist: NonNullable<RenderSearchTuiScreenOptions["searchAssist"]>,
+  home: RenderSearchTuiScreenOptions["home"],
+): string {
+  if (searchAssist.previewLoading) {
+    return "Previewing...";
+  }
+
+  if (searchAssist.previews.length > 0) {
+    return `Previewing ${searchAssist.previews.length} threads`;
+  }
+
+  if (home?.active) {
+    return "Ready";
+  }
+
+  return searchAssist.selection === "list" ? "Suggestion selected" : "Editing search";
 }
 
 function formatSummary(
@@ -604,9 +881,6 @@ function formatSummary(
   nowMs: number,
   options: {
     searching: boolean;
-    sourceLabel?: string;
-    rangeLabel?: string;
-    cwdLabel?: string;
     progress: SearchProgress | null;
   },
 ): string {
@@ -623,9 +897,6 @@ function formatSummary(
 
   const contextualParts = [
     stateText,
-    options.sourceLabel ? `source: ${options.sourceLabel}` : null,
-    options.rangeLabel ? `range: ${options.rangeLabel}` : null,
-    options.cwdLabel ? `cwd: ${options.cwdLabel}` : null,
     scanSummary,
     `${sessions.length} threads`,
     `${results.hits.length} matches`,
@@ -688,6 +959,27 @@ function getExpandedSessionForState(
 
 function formatShortTimestamp(timestamp: string): string {
   return timestamp.slice(5, 16).replace("T", " ");
+}
+
+function isReopenableSession(session: SearchSessionGroup): boolean {
+  return session.source === "active";
+}
+
+function formatSessionAccess(session: SearchSessionGroup): string {
+  return isReopenableSession(session)
+    ? "active · reopenable"
+    : "archived · read-only";
+}
+
+function buildDetailActionLine(
+  session: SearchSessionGroup,
+  reopenable: boolean,
+): string {
+  if (!reopenable) {
+    return `${ANSI.magenta}status:${ANSI.reset} archived · not reopenable`;
+  }
+
+  return `${ANSI.magenta}resume:${ANSI.reset} ${sanitizeInlineText(session.resumeCommand)}  ${ANSI.magenta}open:${ANSI.reset} ${sanitizeInlineText(session.deepLink)}`;
 }
 
 function formatDetailTimestamp(

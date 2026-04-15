@@ -15,7 +15,6 @@ import {
 import {
   getDetailMetadataLineCount,
   getDetailPanelHeightForLayout,
-  getDetailPreviewPageStep,
   getPanelContentSize,
   getSideBySidePaneWidths,
   usesWideDetailsLayout,
@@ -24,16 +23,33 @@ import {
   clampStateForViewport,
   getVisibleSessionCapacityForLayout,
 } from "./render.js";
+import {
+  createDefaultTuiFilters,
+  applyTuiFilterValue,
+  formatCompactFilterSummary,
+  getTuiFilterValueOptions,
+  getTuiFilterRows,
+  sameTuiFilters,
+  type TuiSearchFilters,
+} from "./search-filters.js";
 import type {
   RunSearchTuiOptions,
-  SearchStreamEvent,
   TuiInputEvent,
+  TuiSearchAssistItem,
+  TuiSearchAssistState,
+  TuiSearchSession,
   TuiState,
 } from "./types.js";
+import type { SearchProgress } from "../search/view-filter.js";
 
 const SEARCH_RENDER_INTERVAL_MS = 200;
 const ANIMATION_RENDER_INTERVAL_MS = 100;
 const SEARCH_EVENTS_PER_YIELD = 25;
+const PREVIEW_DEBOUNCE_MS = 200;
+const WIDE_PREVIEW_LIMIT = 5;
+const NARROW_PREVIEW_LIMIT = 3;
+const WIDE_SUGGESTION_LIMIT = 3;
+const NARROW_SUGGESTION_LIMIT = 2;
 
 interface TuiSearchModel {
   hits: SearchHit[];
@@ -47,6 +63,43 @@ interface DetailSearchState {
   active: boolean;
   query: string;
   lastQuery: string;
+}
+
+interface GlobalSearchState {
+  active: boolean;
+  home: boolean;
+  query: string;
+}
+
+interface FilterPickerState {
+  active: boolean;
+  selected: number;
+  mode: "rows" | "values";
+  draftFilters: TuiSearchFilters;
+  valueOptions: string[];
+  valueSelected: number;
+}
+
+interface ActiveSearchSession {
+  query: string;
+  caseSensitive: boolean;
+  results?: SearchResultsPage;
+  iterator?: AsyncIterator<SearchHit>;
+  cancelSearch?: () => void;
+  sourceLabel?: string;
+  rangeLabel?: string;
+  cwdLabel?: string;
+  searchState?: {
+    progress?: SearchProgress | null;
+    sessionSummaries?: Map<string, { sessionId: string; messageCount: number }>;
+    notify?: () => void;
+  };
+}
+
+interface SearchEventEnvelope {
+  type: "search";
+  generation: number;
+  result: IteratorResult<SearchHit>;
 }
 
 export { renderSearchTuiScreen } from "./render.js";
@@ -97,19 +150,42 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
   const stdout = options.stdout ?? process.stdout;
   const openHit = options.openHit ?? (async () => {});
   const resumeHit = options.resumeHit ?? (async () => 0);
-  const iterator = options.hitStream?.[Symbol.asyncIterator]();
-  const model = createTuiSearchModel(options.results?.hits ?? [], !iterator);
+  let filters = options.initialFilters ?? createDefaultTuiFilters();
+  let currentSearch = createActiveSearchSession(options);
+  let currentQuery = currentSearch.query;
+  let currentCaseSensitive = currentSearch.caseSensitive;
+  let currentCwdLabel = currentSearch.cwdLabel;
+  let searchGeneration = 0;
+  let model = createTuiSearchModel(currentSearch.results?.hits ?? [], !currentSearch.iterator);
   let state = createInitialTuiState();
   let detailSearch: DetailSearchState = {
     active: false,
     query: "",
     lastQuery: "",
   };
+  let globalSearch: GlobalSearchState = {
+    active: currentQuery.trim() === "",
+    home: currentQuery.trim() === "",
+    query: currentQuery,
+  };
+  let filterPicker: FilterPickerState = {
+    active: false,
+    selected: 0,
+    mode: "rows",
+    draftFilters: filters,
+    valueOptions: [],
+    valueSelected: 0,
+  };
+  let searchAssist = createSearchAssistState(options.historyEnabled ?? true);
   let cleanedUp = false;
   let renderTimer: NodeJS.Timeout | null = null;
   let animationTimer: NodeJS.Timeout | null = null;
   let lastRenderAt = 0;
   let searchEventsSinceYield = 0;
+  let suggestionGeneration = 0;
+  let previewGeneration = 0;
+  let previewDebounceTimer: NodeJS.Timeout | null = null;
+  let previewAbortController: AbortController | null = null;
 
   readline.emitKeypressEvents(stdin);
   const previousRawMode = stdin.isRaw;
@@ -119,24 +195,186 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
   stdout.write(`${ANSI.altOn}${ANSI.hideCursor}`);
 
   const getResults = () => materializeTuiResults(model);
-  const getSessions = () => materializeTuiSessions(model, options.searchState?.sessionSummaries);
+  const getSessions = () => materializeTuiSessions(model, currentSearch.searchState?.sessionSummaries);
+  const getFiltersSummary = (activeFilters = filters) => formatCompactFilterSummary(activeFilters, currentCwdLabel);
+  const getPreviewLimit = () => ((stdout.columns ?? 80) >= 88 ? WIDE_PREVIEW_LIMIT : NARROW_PREVIEW_LIMIT);
+  const getSuggestionLimit = () => ((stdout.columns ?? 80) >= 88 ? WIDE_SUGGESTION_LIMIT : NARROW_SUGGESTION_LIMIT);
+  const cancelPreviewSearch = () => {
+    if (previewDebounceTimer) {
+      clearTimeout(previewDebounceTimer);
+      previewDebounceTimer = null;
+    }
+
+    previewAbortController?.abort();
+    previewAbortController = null;
+  };
+  const syncSearchAssistSelection = () => {
+    searchAssist = clampSearchAssistSelection(searchAssist);
+  };
+  const refreshSearchAssist = () => {
+    const historyEnabled = options.historyEnabled ?? true;
+    if (!globalSearch.active) {
+      cancelPreviewSearch();
+      searchAssist = {
+        ...createSearchAssistState(historyEnabled),
+        active: false,
+      };
+      return;
+    }
+
+    const query = globalSearch.query;
+    searchAssist = {
+      ...searchAssist,
+      active: true,
+      historyEnabled,
+    };
+
+    if (options.onLoadSuggestions) {
+      const activeSuggestionGeneration = ++suggestionGeneration;
+      void options.onLoadSuggestions({
+        query,
+        limit: getSuggestionLimit(),
+      }).then((result) => {
+        if (
+          cleanedUp
+          || !globalSearch.active
+          || activeSuggestionGeneration !== suggestionGeneration
+          || globalSearch.query !== query
+        ) {
+          return;
+        }
+
+        searchAssist = {
+          ...searchAssist,
+          recent: historyEnabled ? result.recent : [],
+          projects: result.projects,
+        };
+        syncSearchAssistSelection();
+        scheduleSearchRender();
+      }).catch(() => {});
+    } else {
+      searchAssist = {
+        ...searchAssist,
+        recent: [],
+        projects: [],
+      };
+    }
+
+    cancelPreviewSearch();
+    if (query.trim().length >= 2 && options.onPreviewSearch) {
+      const activePreviewGeneration = ++previewGeneration;
+      searchAssist = {
+        ...searchAssist,
+        previews: [],
+        previewLoading: true,
+      };
+      previewDebounceTimer = setTimeout(() => {
+        previewDebounceTimer = null;
+        if (
+          cleanedUp
+          || !globalSearch.active
+          || activePreviewGeneration !== previewGeneration
+          || globalSearch.query !== query
+        ) {
+          return;
+        }
+
+        const controller = new AbortController();
+        previewAbortController = controller;
+        void options.onPreviewSearch?.({
+          query,
+          filters,
+          signal: controller.signal,
+          limit: getPreviewLimit(),
+        }).then((previews) => {
+          if (
+            cleanedUp
+            || controller.signal.aborted
+            || !globalSearch.active
+            || activePreviewGeneration !== previewGeneration
+            || globalSearch.query !== query
+          ) {
+            return;
+          }
+
+          previewAbortController = null;
+          searchAssist = {
+            ...searchAssist,
+            previews,
+            previewLoading: false,
+          };
+          syncSearchAssistSelection();
+          scheduleSearchRender();
+        }).catch(() => {
+          if (controller.signal.aborted) {
+            return;
+          }
+
+          previewAbortController = null;
+          searchAssist = {
+            ...searchAssist,
+            previews: [],
+            previewLoading: false,
+          };
+          syncSearchAssistSelection();
+          scheduleSearchRender();
+        });
+      }, PREVIEW_DEBOUNCE_MS);
+      previewDebounceTimer.unref?.();
+    } else {
+      previewGeneration += 1;
+      searchAssist = {
+        ...searchAssist,
+        previews: [],
+        previewLoading: false,
+      };
+    }
+
+    syncSearchAssistSelection();
+  };
   const render = () => {
     lastRenderAt = Date.now();
     writeFrame(stdout, renderSearchTuiScreen({
-      query: options.query,
+      query: currentQuery,
       results: getResults(),
       sessions: getSessions(),
       state,
       width: stdout.columns ?? 80,
       height: stdout.rows ?? 24,
-      caseSensitive: options.caseSensitive,
+      caseSensitive: currentCaseSensitive,
       searching: !model.searchDone,
-      sourceLabel: options.sourceLabel,
-      rangeLabel: options.rangeLabel,
-      cwdLabel: options.cwdLabel,
-      progress: options.searchState?.progress ?? null,
-      prompt: detailSearch.active ? `/${detailSearch.query}` : null,
-      searchHint: detailSearch.active ? "detail-search" : null,
+      sourceLabel: currentSearch.sourceLabel,
+      rangeLabel: currentSearch.rangeLabel,
+      cwdLabel: currentCwdLabel,
+      progress: currentSearch.searchState?.progress ?? null,
+      prompt: detailSearch.active
+        ? `detail> ${detailSearch.query}`
+        : globalSearch.active
+          ? `search> ${globalSearch.query}`
+          : null,
+      searchHint: detailSearch.active
+        ? "detail-search"
+        : globalSearch.active
+          ? "global-search"
+          : null,
+      home: globalSearch.home
+        ? {
+          active: true,
+          query: globalSearch.query,
+        }
+        : null,
+      filterPicker: filterPicker.active
+        ? {
+          active: true,
+          rows: getTuiFilterRows(filterPicker.draftFilters),
+          selected: filterPicker.selected,
+          mode: filterPicker.mode,
+          valueOptions: filterPicker.valueOptions,
+          valueSelected: filterPicker.valueSelected,
+        }
+        : null,
+      filtersSummary: getFiltersSummary(filterPicker.active ? filterPicker.draftFilters : filters),
+      searchAssist: searchAssist.active ? searchAssist : null,
     }));
   };
   const clearScheduledRender = () => {
@@ -198,16 +436,172 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
     cleanedUp = true;
     clearScheduledRender();
     clearAnimationRender();
-    options.cancelSearch?.();
-    await iterator?.return?.();
+    cancelPreviewSearch();
+    await disposeSearchSession(currentSearch);
     await cleanupTerminal(stdin, stdout, previousRawMode);
+  };
+
+  const bindSearchSession = (session: TuiSearchSession) => {
+    detachSearchNotify(currentSearch);
+    currentSearch = createActiveSearchSession(session);
+    currentQuery = currentSearch.query;
+    currentCaseSensitive = currentSearch.caseSensitive;
+    currentCwdLabel = currentSearch.cwdLabel;
+    model = createTuiSearchModel(currentSearch.results?.hits ?? [], !currentSearch.iterator);
+    state = createInitialTuiState();
+    detailSearch = {
+      active: false,
+      query: "",
+      lastQuery: detailSearch.lastQuery,
+    };
+    globalSearch = {
+      active: false,
+      home: false,
+      query: currentQuery,
+    };
+    filterPicker = {
+      active: false,
+      selected: 0,
+      mode: "rows",
+      draftFilters: filters,
+      valueOptions: [],
+      valueSelected: 0,
+    };
+    cancelPreviewSearch();
+    searchAssist = {
+      ...createSearchAssistState(options.historyEnabled ?? true),
+      active: false,
+    };
+    searchGeneration += 1;
+    pendingSearch = nextSearchEvent(currentSearch.iterator, searchGeneration);
+    attachSearchNotify(currentSearch, () => {
+      model.dirty = true;
+      scheduleSearchRender();
+    });
+  };
+
+  const startSearch = async (
+    query: string,
+    reason: "submit" | "suggestion" | "filters" = "submit",
+  ) => {
+    const nextQuery = query.trim();
+    if (!options.onStartSearch) {
+      state = withStatus(state, "Search restart is unavailable in this view.");
+      return;
+    }
+
+    if (!nextQuery) {
+      state = withStatus(state, "Enter a keyword first.");
+      return;
+    }
+
+    await disposeSearchSession(currentSearch);
+    const session = await options.onStartSearch({
+      query: nextQuery,
+      filters,
+      reason,
+    });
+    bindSearchSession(session);
+  };
+
+  const runLucky = async (query: string): Promise<number | null> => {
+    const nextQuery = query.trim();
+    if (!options.onLuckySearch) {
+      state = withStatus(state, "Lucky search is unavailable in this view.");
+      return null;
+    }
+
+    if (!nextQuery) {
+      state = withStatus(state, "Enter a keyword first.");
+      return null;
+    }
+
+    if (globalSearch.active && searchAssist.previews.length > 0) {
+      const preview = searchAssist.previews[0];
+      if (preview) {
+        await finish();
+        await openHit(searchSessionToHit(preview), "preview");
+        return 0;
+      }
+    }
+
+    const result = await options.onLuckySearch({
+      query: nextQuery,
+      filters,
+    });
+    if (result.opened) {
+      await finish();
+      return 0;
+    }
+
+    state = withStatus(state, result.message ?? "No matches found.");
+    return null;
+  };
+
+  const openFilterPicker = () => {
+    filterPicker = {
+      active: true,
+      selected: 0,
+      mode: "rows",
+      draftFilters: filters,
+      valueOptions: [],
+      valueSelected: 0,
+    };
+  };
+
+  const closeFilterPicker = async () => {
+    const nextFilters = filterPicker.draftFilters;
+    const changed = !sameTuiFilters(filters, nextFilters);
+    const nextQuery = (globalSearch.active ? globalSearch.query : currentQuery).trim();
+
+    filterPicker = {
+      active: false,
+      selected: 0,
+      mode: "rows",
+      draftFilters: filters,
+      valueOptions: [],
+      valueSelected: 0,
+    };
+
+    if (!changed) {
+      if (globalSearch.active) {
+        refreshSearchAssist();
+      }
+      state = clearStatus(state);
+      return;
+    }
+
+    filters = nextFilters;
+    state = clearStatus(state);
+    if (nextQuery) {
+      await startSearch(nextQuery, "filters");
+      return;
+    }
+
+    if (globalSearch.active) {
+      refreshSearchAssist();
+    }
+  };
+
+  const updateGlobalSearchQuery = (query: string) => {
+    globalSearch = {
+      ...globalSearch,
+      query,
+    };
+    searchAssist = {
+      ...searchAssist,
+      selection: "input",
+      selectedIndex: 0,
+    };
+    state = clearStatus(state);
+    refreshSearchAssist();
   };
 
   let pendingInput = waitForTuiEvent(stdin, stdout).then((event) => ({
     type: "input" as const,
     event,
   }));
-  let pendingSearch = nextSearchEvent(iterator);
+  let pendingSearch = nextSearchEvent(currentSearch.iterator, searchGeneration);
   const armInput = () => {
     pendingInput = waitForTuiEvent(stdin, stdout).then((event) => ({
       type: "input" as const,
@@ -215,13 +609,12 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
     }));
   };
 
-  if (options.searchState) {
-    options.searchState.notify = () => {
-      model.dirty = true;
-      scheduleSearchRender();
-    };
-  }
+  attachSearchNotify(currentSearch, () => {
+    model.dirty = true;
+    scheduleSearchRender();
+  });
 
+  refreshSearchAssist();
   render();
   scheduleAnimationRender();
 
@@ -233,12 +626,16 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
       ]);
 
       if (event.type === "search") {
+        if (event.generation !== searchGeneration) {
+          continue;
+        }
+
         pendingSearch = null;
         if (event.result.done) {
           model.searchDone = true;
         } else {
           appendTuiSearchHit(model, event.result.value);
-          pendingSearch = nextSearchEvent(iterator);
+          pendingSearch = nextSearchEvent(currentSearch.iterator, searchGeneration);
         }
 
         if (model.searchDone) {
@@ -267,6 +664,9 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
       if (inputEvent.type === "resize") {
         state = clampStateForViewport(state, sessions, viewport.width, viewport.height);
         state = syncDetailScroll(state, getExpandedSession(sessions, state), viewport.width, viewport.height);
+        if (globalSearch.active) {
+          refreshSearchAssist();
+        }
         armInput();
         clearScheduledRender();
         render();
@@ -355,9 +755,296 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
         continue;
       }
 
+      if (filterPicker.active) {
+        if (key.ctrl && key.name === "c") {
+          return 0;
+        }
+
+        if (key.name === "q") {
+          return 0;
+        }
+
+        if (key.name === "escape") {
+          if (filterPicker.mode === "values") {
+            filterPicker = {
+              ...filterPicker,
+              mode: "rows",
+              valueOptions: [],
+              valueSelected: 0,
+            };
+          } else {
+            await closeFilterPicker();
+          }
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "up" || key.name === "k") {
+          if (filterPicker.mode === "values") {
+            filterPicker = {
+              ...filterPicker,
+              valueSelected: clamp(filterPicker.valueSelected - 1, 0, Math.max(0, filterPicker.valueOptions.length - 1)),
+            };
+          } else {
+            filterPicker = {
+              ...filterPicker,
+              selected: clamp(filterPicker.selected - 1, 0, Math.max(0, getTuiFilterRows(filterPicker.draftFilters).length - 1)),
+            };
+          }
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "down" || key.name === "j") {
+          if (filterPicker.mode === "values") {
+            filterPicker = {
+              ...filterPicker,
+              valueSelected: clamp(filterPicker.valueSelected + 1, 0, Math.max(0, filterPicker.valueOptions.length - 1)),
+            };
+          } else {
+            filterPicker = {
+              ...filterPicker,
+              selected: clamp(filterPicker.selected + 1, 0, Math.max(0, getTuiFilterRows(filterPicker.draftFilters).length - 1)),
+            };
+          }
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "return") {
+          const rows = getTuiFilterRows(filterPicker.draftFilters);
+          const row = rows[filterPicker.selected];
+          if (filterPicker.mode === "rows") {
+            if (row) {
+              const valueOptions = getTuiFilterValueOptions(filterPicker.draftFilters, row.key);
+              const valueSelected = Math.max(0, valueOptions.indexOf(row.value));
+              filterPicker = {
+                ...filterPicker,
+                mode: "values",
+                valueOptions,
+                valueSelected,
+              };
+            }
+          } else {
+            const selectedValue = filterPicker.valueOptions[filterPicker.valueSelected];
+            if (row && selectedValue) {
+              filterPicker = {
+                ...filterPicker,
+                mode: "rows",
+                draftFilters: applyTuiFilterValue(filterPicker.draftFilters, row.key, selectedValue),
+                valueOptions: [],
+                valueSelected: 0,
+              };
+            }
+          }
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        armInput();
+        continue;
+      }
+
+      if (globalSearch.active) {
+        const assistItems = getSearchAssistItems(searchAssist);
+        const selectedAssist = searchAssist.selection === "list"
+          ? assistItems[searchAssist.selectedIndex] ?? null
+          : null;
+
+        if (key.ctrl && key.name === "c") {
+          return 0;
+        }
+
+        if (key.ctrl && key.name === "o") {
+          const exitCode = await runLucky(globalSearch.query);
+          if (exitCode !== null) {
+            return exitCode;
+          }
+
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "escape") {
+          if (globalSearch.home) {
+            return 0;
+          }
+
+          cancelPreviewSearch();
+          globalSearch = {
+            active: false,
+            home: false,
+            query: currentQuery,
+          };
+          searchAssist = {
+            ...createSearchAssistState(options.historyEnabled ?? true),
+            active: false,
+          };
+          state = clearStatus(state);
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "up" || key.name === "k") {
+          if (assistItems.length > 0) {
+            searchAssist = {
+              ...searchAssist,
+              selection: "list",
+              selectedIndex: searchAssist.selection === "list"
+                ? clamp(searchAssist.selectedIndex - 1, 0, Math.max(0, assistItems.length - 1))
+                : Math.max(0, assistItems.length - 1),
+            };
+          }
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "down" || key.name === "j") {
+          if (assistItems.length > 0) {
+            searchAssist = {
+              ...searchAssist,
+              selection: "list",
+              selectedIndex: searchAssist.selection === "list"
+                ? clamp(searchAssist.selectedIndex + 1, 0, Math.max(0, assistItems.length - 1))
+                : 0,
+            };
+          }
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "tab") {
+          const acceptItem = selectedAssist ?? findFirstAcceptableAssistItem(assistItems);
+          if (acceptItem && acceptItem.kind !== "preview") {
+            updateGlobalSearchQuery(acceptItem.value);
+          }
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if ((key.name === "backspace" || key.name === "delete") && searchAssist.selection === "list") {
+          if (selectedAssist?.kind === "recent" && options.onDeleteRecentQuery) {
+            const deleted = await options.onDeleteRecentQuery(selectedAssist.value);
+            if (deleted) {
+              searchAssist = {
+                ...searchAssist,
+                selection: "input",
+                selectedIndex: 0,
+              };
+              refreshSearchAssist();
+            }
+          }
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "backspace" || key.name === "delete") {
+          updateGlobalSearchQuery(globalSearch.query.slice(0, -1));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (/^[1-5]$/.test(inputEvent.text)) {
+          const preview = searchAssist.previews[Number(inputEvent.text) - 1];
+          if (preview) {
+            await finish();
+            await openHit(searchSessionToHit(preview), "preview");
+            return 0;
+          }
+        }
+
+        if (key.name === "return") {
+          if (selectedAssist?.kind === "preview" && selectedAssist.preview) {
+            await finish();
+            await openHit(searchSessionToHit(selectedAssist.preview), "preview");
+            return 0;
+          }
+
+          if (selectedAssist && selectedAssist.kind !== "preview") {
+            await startSearch(selectedAssist.value, "suggestion");
+          } else {
+            await startSearch(globalSearch.query, "submit");
+          }
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "f") {
+          openFilterPicker();
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (isPrintableInput(inputEvent.text, key)) {
+          updateGlobalSearchQuery(`${globalSearch.query}${inputEvent.text}`);
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        armInput();
+        continue;
+      }
+
       if (sessions.length === 0) {
+        if (globalSearch.home) {
+          armInput();
+          continue;
+        }
+
         if (key.name === "q" || key.name === "escape" || key.name === "return" || (key.ctrl && key.name === "c")) {
           return 0;
+        }
+        if (key.name === "s") {
+          globalSearch = {
+            active: true,
+            home: false,
+            query: currentQuery,
+          };
+          searchAssist = {
+            ...searchAssist,
+            selection: "input",
+            selectedIndex: 0,
+          };
+          refreshSearchAssist();
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+        if (key.name === "f") {
+          openFilterPicker();
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
         }
         armInput();
         continue;
@@ -369,6 +1056,18 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
 
       if (key.name === "escape" || key.name === "q") {
         return 0;
+      }
+
+      if (key.ctrl && key.name === "o") {
+        const exitCode = await runLucky(currentQuery);
+        if (exitCode !== null) {
+          return exitCode;
+        }
+
+        armInput();
+        clearScheduledRender();
+        render();
+        continue;
       }
 
       if (key.name === "return" || key.name === "o") {
@@ -411,6 +1110,32 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
 
         await finish();
         return hit ? resumeHit(hit) : 0;
+      }
+
+      if (key.name === "s") {
+        globalSearch = {
+          active: true,
+          home: false,
+          query: currentQuery,
+        };
+        searchAssist = {
+          ...searchAssist,
+          selection: "input",
+          selectedIndex: 0,
+        };
+        refreshSearchAssist();
+        armInput();
+        clearScheduledRender();
+        render();
+        continue;
+      }
+
+      if (key.name === "f") {
+        openFilterPicker();
+        armInput();
+        clearScheduledRender();
+        render();
+        continue;
       }
 
       if (inputEvent.text === "/") {
@@ -481,7 +1206,23 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
         viewport.width,
         viewport.height,
       );
-      const detailPageStep = getDetailPreviewPageStep(detailPanelHeight, Boolean(expanded?.cwd));
+      const previewHeight = Math.max(0, detailPanelHeight - getDetailMetadataLineCount(detailPanelHeight, {
+        hasCwd: Boolean(expanded?.cwd),
+        hasActionLine: true,
+      }));
+      const detailPageStep = expanded
+        ? Math.max(
+          1,
+          measureVisibleDetailPreviewRange(
+            expanded.matchPreviews,
+            usesWideDetailsLayout(viewport.width)
+              ? getSideBySidePaneWidths(viewport.width).rightWidth
+              : viewport.width,
+            previewHeight,
+            state.detailScrollTop,
+          ).renderedCount,
+        )
+        : 1;
       if (key.name === "space") {
         state = clearStatus(toggleExpandedSelection(state, results.hits));
         state = clampStateForViewport(state, sessions, viewport.width, viewport.height);
@@ -599,11 +1340,120 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
       render();
     }
   } finally {
-    if (options.searchState) {
-      options.searchState.notify = undefined;
-    }
+    detachSearchNotify(currentSearch);
     await finish();
   }
+}
+
+function createActiveSearchSession(session: TuiSearchSession): ActiveSearchSession {
+  return {
+    query: session.query,
+    caseSensitive: session.caseSensitive ?? false,
+    results: session.results,
+    iterator: session.hitStream?.[Symbol.asyncIterator](),
+    cancelSearch: session.cancelSearch,
+    sourceLabel: session.sourceLabel,
+    rangeLabel: session.rangeLabel,
+    cwdLabel: session.cwdLabel,
+    searchState: session.searchState,
+  };
+}
+
+function attachSearchNotify(
+  session: ActiveSearchSession,
+  notify: () => void,
+): void {
+  if (session.searchState) {
+    session.searchState.notify = notify;
+  }
+}
+
+function detachSearchNotify(session: ActiveSearchSession): void {
+  if (session.searchState) {
+    session.searchState.notify = undefined;
+  }
+}
+
+async function disposeSearchSession(session: ActiveSearchSession): Promise<void> {
+  session.cancelSearch?.();
+  detachSearchNotify(session);
+  await session.iterator?.return?.();
+}
+
+function createSearchAssistState(historyEnabled: boolean): TuiSearchAssistState {
+  return {
+    active: false,
+    selection: "input",
+    selectedIndex: 0,
+    historyEnabled,
+    recent: [],
+    projects: [],
+    previews: [],
+    previewLoading: false,
+  };
+}
+
+function getSearchAssistItems(searchAssist: TuiSearchAssistState): TuiSearchAssistItem[] {
+  return [
+    ...searchAssist.previews.map((preview) => ({
+      kind: "preview" as const,
+      value: preview.title || preview.sessionId,
+      preview,
+    })),
+    ...searchAssist.recent.map((entry) => ({
+      kind: "recent" as const,
+      value: entry.value,
+      count: entry.count,
+    })),
+    ...searchAssist.projects.map((entry) => ({
+      kind: "project" as const,
+      value: entry.value,
+      count: entry.count,
+    })),
+  ];
+}
+
+function clampSearchAssistSelection(searchAssist: TuiSearchAssistState): TuiSearchAssistState {
+  const items = getSearchAssistItems(searchAssist);
+  if (items.length === 0) {
+    return {
+      ...searchAssist,
+      selection: "input",
+      selectedIndex: 0,
+    };
+  }
+
+  return {
+    ...searchAssist,
+    selectedIndex: clamp(searchAssist.selectedIndex, 0, items.length - 1),
+  };
+}
+
+function findFirstAcceptableAssistItem(
+  items: TuiSearchAssistItem[],
+): TuiSearchAssistItem | null {
+  return items.find((item) => item.kind !== "preview") ?? null;
+}
+
+function searchSessionToHit(session: SearchSessionGroup): SearchHit {
+  return {
+    sessionId: session.sessionId,
+    timestamp: session.timestamp,
+    cwd: session.cwd,
+    title: session.title,
+    snippet: session.previewSnippet,
+    preview: session.matchPreviews[0] ?? {
+      kind: "text",
+      label: "Text",
+      text: session.previewSnippet,
+      timestamp: session.timestamp,
+      secondaryText: null,
+    },
+    source: session.source,
+    filePath: "",
+    resumeCommand: session.resumeCommand,
+    deepLink: session.deepLink,
+  };
 }
 
 function clearStatus(state: TuiState): TuiState {
@@ -759,7 +1609,10 @@ function syncDetailScroll(
     ...state,
     expandedSessionId: expanded.sessionId,
   }, width, height);
-  const previewHeight = Math.max(0, detailHeight - getDetailMetadataLineCount(detailHeight, Boolean(expanded.cwd)));
+  const previewHeight = Math.max(0, detailHeight - getDetailMetadataLineCount(detailHeight, {
+    hasCwd: Boolean(expanded.cwd),
+    hasActionLine: true,
+  }));
   const maxIndex = Math.max(0, expanded.matchPreviews.length - 1);
   const selected = clamp(state.detailSelected, 0, maxIndex);
   let scrollTop = clamp(state.detailScrollTop, 0, maxIndex);
@@ -875,13 +1728,17 @@ function writeFrame(stdout: NodeJS.WriteStream, screen: string): void {
   stdout.write(`${ANSI.clear}${ANSI.home}${screen}`);
 }
 
-function nextSearchEvent(iterator: AsyncIterator<SearchHit> | undefined): Promise<SearchStreamEvent> | null {
+function nextSearchEvent(
+  iterator: AsyncIterator<SearchHit> | undefined,
+  generation: number,
+): Promise<SearchEventEnvelope> | null {
   if (!iterator) {
     return null;
   }
 
   return iterator.next().then((result) => ({
     type: "search" as const,
+    generation,
     result,
   }));
 }

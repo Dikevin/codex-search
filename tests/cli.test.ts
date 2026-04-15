@@ -2,8 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Writable } from "node:stream";
 import { join } from "node:path";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 import { getOpenUrlCandidates, runCli as runCliBase } from "../src/main.js";
+import type { EventLogRecord } from "../src/cli/events-log.js";
 import type { SearchLogRecord } from "../src/cli/search-log.js";
 import { type SearchResultsPage } from "../src/search/session-reader.js";
 
@@ -212,6 +215,29 @@ test("runCli reports usage errors for missing keyword", async () => {
   assert.equal(missingStderr.read(), helpStdout.read());
 });
 
+test("runCli enters the TUI home on a TTY without a keyword", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+  let invoked = false;
+
+  const exitCode = await runCli(["--root-dir", fixturesDir], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    isInteractiveTty: true,
+    now: fixedNow,
+    runTui: async ({ query }) => {
+      invoked = true;
+      assert.equal(query, "");
+      return 0;
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(invoked, true);
+  assert.equal(stdout.read(), "");
+  assert.equal(stderr.read(), "");
+});
+
 test("runCli prints help with split usage lines and grouped search flags", async () => {
   const stdout = createMemoryStream();
   const stderr = createMemoryStream();
@@ -225,9 +251,121 @@ test("runCli prints help with split usage lines and grouped search flags", async
   assert.equal(exitCode, 0);
   assert.equal(stderr.read(), "");
   const help = stdout.read();
-  assert.match(help, /Usage:\n  codexs --version\n  codexs --help\n  codexs <keyword>\n  codexs lucky <keyword>\n  codexs <keyword> --json \[--page <N>\] \[--limit <N>\] \[--offset <N>\] \[--with-total\]\n  codexs <keyword> --jsonl\n  codexs -- <keyword-starting-with-dash>/);
+  assert.match(help, /Usage:\n  codexs \[search-flags\]\n  codexs <keyword>\n  codexs lucky <keyword>\n  codexs <keyword> --json \[json-flags\]\n  codexs <keyword> --jsonl\n  codexs -- <keyword-starting-with-dash>\n  codexs history\n  codexs history --json\n  codexs history clear\n  codexs history enable\n  codexs history disable/);
   assert.match(help, /\nShared search flags:\n/);
-  assert.doesNotMatch(help, /\[--active\|--archived\|--all\]/);
+  assert.match(help, /--active \| --archived \| --all/);
+  assert.match(help, /\nHistory:\n/);
+});
+
+test("runCli lists, disables, enables, and clears search history", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "codexs-history-"));
+  await mkdir(join(rootDir, "logs", "codex-search"), { recursive: true });
+  await writeFile(join(rootDir, "logs", "codex-search", "searches.jsonl"), [
+    JSON.stringify({
+      version: 1,
+      type: "search",
+      startedAt: "2026-04-16T01:00:00.000Z",
+      endedAt: "2026-04-16T01:00:01.000Z",
+      durationMs: 1000,
+      mode: "json",
+      status: "completed",
+      exitCode: 0,
+      query: "quota",
+      flags: {
+        sourceMode: "active",
+        sources: ["active"],
+        view: "useful",
+        caseSensitive: false,
+        cwd: null,
+        recent: "30d",
+        start: null,
+        end: null,
+        allTime: false,
+        json: true,
+        jsonl: false,
+        page: 1,
+        pageSize: 5,
+        offset: 0,
+        withTotal: false,
+      },
+      results: {
+        hits: 1,
+        threads: 1,
+      },
+      progress: null,
+    } satisfies SearchLogRecord),
+  ].join("\n"), "utf8");
+
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+  const events: EventLogRecord[] = [];
+
+  const listExitCode = await runCli(["history", "--root-dir", rootDir], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
+    writeEventLog: async (_root, record) => {
+      events.push(record);
+    },
+  });
+
+  assert.equal(listExitCode, 0);
+  assert.match(stdout.read(), /quota/);
+  assert.equal(stderr.read(), "");
+
+  const disableStdout = createMemoryStream();
+  const disableExitCode = await runCli(["history", "disable", "--root-dir", rootDir], {
+    stdout: disableStdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
+    writeEventLog: async (_root, record) => {
+      events.push(record);
+    },
+  });
+  assert.equal(disableExitCode, 0);
+  assert.match(disableStdout.read(), /Disabled search history/);
+
+  const disabledStdout = createMemoryStream();
+  const disabledExitCode = await runCli(["history", "--root-dir", rootDir], {
+    stdout: disabledStdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
+    writeEventLog: async (_root, record) => {
+      events.push(record);
+    },
+  });
+  assert.equal(disabledExitCode, 0);
+  assert.match(disabledStdout.read(), /Search history is disabled/);
+
+  const enableStdout = createMemoryStream();
+  const enableExitCode = await runCli(["history", "enable", "--root-dir", rootDir], {
+    stdout: enableStdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
+    writeEventLog: async (_root, record) => {
+      events.push(record);
+    },
+  });
+  assert.equal(enableExitCode, 0);
+  assert.match(enableStdout.read(), /Enabled search history/);
+
+  const clearStdout = createMemoryStream();
+  const clearExitCode = await runCli(["history", "clear", "--root-dir", rootDir], {
+    stdout: clearStdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
+    writeEventLog: async (_root, record) => {
+      events.push(record);
+    },
+  });
+  assert.equal(clearExitCode, 0);
+  assert.match(clearStdout.read(), /Cleared search history/);
+
+  assert.deepEqual(events.map((event) => event.event), [
+    "history_disabled",
+    "history_enabled",
+    "history_clear",
+  ]);
 });
 
 test("runCli suggests corrections for unknown flags", async () => {

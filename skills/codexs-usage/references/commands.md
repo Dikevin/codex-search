@@ -2,11 +2,17 @@
 
 ## Basic search
 
+- `codexs`
 - `codexs quota`
 - `codexs quota -D .`
 - `codexs quota --cwd ~/code/codex`
 - `codexs quota --json`
 - `codexs quota --jsonl`
+- `codexs history`
+- `codexs history --json`
+- `codexs history clear`
+- `codexs history enable`
+- `codexs history disable`
 - `codexs quota --view ops`
 - `codexs quota --view protocol`
 - `codexs quota --json -n 20`
@@ -39,6 +45,13 @@
 
 ## TUI keys
 
+- Home screen: type a keyword directly
+- `Ctrl+o` lucky-open the newest matching active thread for the current keyword; when preview results are visible it opens the first preview hit immediately
+- `s` reopen the global search prompt with the current keyword prefilled
+- `f` open the bottom overlay filter picker and apply source/range/view/case changes globally for later searches in the same TUI session
+- `Tab` accept the selected `recent` or `project` suggestion while the bottom search dock is active
+- `1-5` open the numbered preview result directly when preview results are visible
+- `Backspace/Delete` remove the selected `recent` suggestion while the suggestion list is focused
 - `Enter` open selected active thread
 - `o` open selected active thread and stay in the picker
 - `r` resume selected active thread in CLI
@@ -52,7 +65,7 @@
 - `g` / `G` jump to the first or last thread
 - `/` search inside the expanded transcript preview
 - `n` / `N` jump to the next or previous transcript-search match
-- `q` / `Esc` quit
+- `q` / `Esc` quit, except that `Esc` first cancels the active search prompt or filter picker
 
 ## Result actions
 
@@ -72,12 +85,15 @@
 - On wider terminals, cwd appears before the thread title.
 - The list inserts lightweight time bucket separators such as `[<1d]` and `[<1w]`.
 - The picker renders inside a centered panel instead of drawing data directly against the terminal edge.
+- Bare `codexs` opens a centered home screen before the first search.
+- The active search input lives in a bottom dock above the status bar rather than at the top of the panel.
+- While searching, the dock can show `preview`, `recent`, and `project` sections above the input line.
 - Rows prefer Codex thread titles when available.
 - Matching threads start appearing as soon as each file produces hits, and later hits from those threads keep streaming in while search continues.
 - Multi-file scans use worker threads by default, so different session files can be searched in parallel.
 - The footer shows an animated global search state plus count-based scan progress such as `scan 12/43`; it keeps list/viewport summaries such as `selected`, `visible`, and `detail`, but avoids current-thread metadata or per-thread scan state.
 - Expanded details use a responsive panel.
-- Expanded details show a compact metadata header plus typed transcript previews, preserve meaningful line breaks, can wrap across multiple lines, and show thread-local context such as match count and message count in the detail header instead of the footer.
+- Expanded details show a compact metadata header plus typed transcript previews, preserve meaningful line breaks, can wrap across multiple lines, and show thread-local context such as match count, message count, session id, reopenability/read-only state, and `resume:` / `open:` actions in the detail header instead of the footer.
 - When details stay open but focus returns to the list, moving the selection updates the preview pane to the currently selected thread.
 - Once transcript focus is active, `j/k` moves through visible matches before the preview scrolls, paging keys and `/` search operate inside the preview instead of the thread list, and cross-day preview timestamps expand beyond bare `HH:mm`.
 - Wide terminals show list and details side by side.
@@ -87,9 +103,10 @@
 ## Search logs
 
 - `codexs` does not write persistent search or completion caches.
-- Each search appends one metadata-only JSONL record to `~/.codex/logs/codex-search/searches.jsonl`.
-- Log records include query, flags, mode, status, duration, exit code, result counts, and final count-based file progress.
-- Log records do not include snippets, transcript text, file paths, or per-hit details.
+- Explicit submitted searches append one metadata-only JSONL record to `~/.codex/logs/codex-search/searches.jsonl`.
+- Explicit actions plus warnings and errors append JSONL records to `~/.codex/logs/codex-search/events.jsonl`.
+- `codexs history` reads `searches.jsonl` and `codexs history disable` stops new history writes.
+- Full enums and schema live in `docs/logging.md`.
 - Time filters are checked again against each matching line's timestamp, so older content inside a newer session file can still be excluded.
 
 ## JSONL output

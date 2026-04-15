@@ -7,6 +7,10 @@ import type {
   SearchSessionSummary,
 } from "../search/session-reader.js";
 import type { SearchProgress } from "../search/view-filter.js";
+import type {
+  TuiFilterRow,
+  TuiSearchFilters,
+} from "./search-filters.js";
 
 export interface TuiStreams {
   stdin: NodeJS.ReadStream;
@@ -14,8 +18,37 @@ export interface TuiStreams {
 }
 
 export interface TuiActions {
-  openHit(hit: SearchHit): Promise<void>;
+  openHit(hit: SearchHit, origin?: "list" | "preview"): Promise<void>;
   resumeHit(hit: SearchHit): Promise<number>;
+}
+
+export interface TuiSearchSession {
+  query: string;
+  caseSensitive?: boolean;
+  results?: SearchResultsPage;
+  hitStream?: AsyncIterable<SearchHit>;
+  cancelSearch?: () => void;
+  sourceLabel?: string;
+  rangeLabel?: string;
+  cwdLabel?: string;
+  searchState?: {
+    progress?: SearchProgress | null;
+    sessionSummaries?: Map<string, SearchSessionSummary>;
+    notify?: () => void;
+  };
+}
+
+export interface TuiQuerySuggestion {
+  kind: "recent" | "project";
+  value: string;
+  count?: number;
+}
+
+export interface TuiSearchAssistItem {
+  kind: "recent" | "project" | "preview";
+  value: string;
+  count?: number;
+  preview?: SearchSessionGroup;
 }
 
 export interface RunSearchTuiOptions extends Partial<TuiStreams>, Partial<TuiActions> {
@@ -32,6 +65,31 @@ export interface RunSearchTuiOptions extends Partial<TuiStreams>, Partial<TuiAct
     sessionSummaries?: Map<string, SearchSessionSummary>;
     notify?: () => void;
   };
+  initialFilters?: TuiSearchFilters;
+  historyEnabled?: boolean;
+  onStartSearch?: (request: {
+    query: string;
+    filters: TuiSearchFilters;
+    reason?: "submit" | "suggestion" | "filters";
+  }) => Promise<TuiSearchSession>;
+  onLuckySearch?: (request: { query: string; filters: TuiSearchFilters }) => Promise<{
+    opened: boolean;
+    message?: string;
+  }>;
+  onLoadSuggestions?: (request: {
+    query: string;
+    limit: number;
+  }) => Promise<{
+    recent: TuiQuerySuggestion[];
+    projects: TuiQuerySuggestion[];
+  }>;
+  onPreviewSearch?: (request: {
+    query: string;
+    filters: TuiSearchFilters;
+    signal: AbortSignal;
+    limit: number;
+  }) => Promise<SearchSessionGroup[]>;
+  onDeleteRecentQuery?: (query: string) => Promise<boolean>;
 }
 
 export interface TuiState {
@@ -42,6 +100,31 @@ export interface TuiState {
   detailSelected: number;
   detailScrollTop: number;
   statusMessage: string | null;
+}
+
+export interface TuiFilterPickerState {
+  active: boolean;
+  rows: TuiFilterRow[];
+  selected: number;
+  mode: "rows" | "values";
+  valueOptions?: string[];
+  valueSelected?: number;
+}
+
+export interface TuiHomeState {
+  active: boolean;
+  query: string;
+}
+
+export interface TuiSearchAssistState {
+  active: boolean;
+  selection: "input" | "list";
+  selectedIndex: number;
+  historyEnabled: boolean;
+  recent: TuiQuerySuggestion[];
+  projects: TuiQuerySuggestion[];
+  previews: SearchSessionGroup[];
+  previewLoading: boolean;
 }
 
 export interface RenderSearchTuiScreenOptions {
@@ -60,6 +143,10 @@ export interface RenderSearchTuiScreenOptions {
   progress?: SearchProgress | null;
   prompt?: string | null;
   searchHint?: string | null;
+  home?: TuiHomeState | null;
+  filterPicker?: TuiFilterPickerState | null;
+  filtersSummary?: string | null;
+  searchAssist?: TuiSearchAssistState | null;
 }
 
 export type TuiInputEvent =
