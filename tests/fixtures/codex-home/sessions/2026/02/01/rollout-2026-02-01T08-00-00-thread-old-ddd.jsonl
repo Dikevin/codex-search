@@ -1,0 +1,2 @@
+{"timestamp":"2026-02-01T08:00:00.000Z","type":"session_meta","payload":{"id":"thread-old-ddd","timestamp":"2026-02-01T08:00:00.000Z","cwd":"/tmp/project-old-d","originator":"Codex Desktop"}}
+{"timestamp":"2026-02-01T08:01:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Please inspect old quota history."}]}}

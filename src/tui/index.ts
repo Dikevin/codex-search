@@ -2,63 +2,64 @@ import readline from "node:readline";
 
 import {
   aggregateSearchHitsBySession,
+  aggregateSearchHitsBySessionWithSummaries,
   type SearchHit,
   type SearchResultsPage,
   type SearchSessionGroup,
 } from "../search/session-reader.js";
+import { ANSI } from "./ansi.js";
+import {
+  renderSearchTuiScreen,
+  measureVisibleDetailPreviewRange,
+} from "./render.js";
+import {
+  getDetailMetadataLineCount,
+  getDetailPanelHeightForLayout,
+  getDetailPreviewPageStep,
+  getPanelContentSize,
+  getSideBySidePaneWidths,
+  usesWideDetailsLayout,
+} from "./layout.js";
+import {
+  clampStateForViewport,
+  getVisibleSessionCapacityForLayout,
+} from "./render.js";
+import type {
+  RunSearchTuiOptions,
+  SearchStreamEvent,
+  TuiInputEvent,
+  TuiState,
+} from "./types.js";
 
-interface TuiStreams {
-  stdin: NodeJS.ReadStream;
-  stdout: NodeJS.WriteStream;
+const SEARCH_RENDER_INTERVAL_MS = 200;
+const ANIMATION_RENDER_INTERVAL_MS = 100;
+const SEARCH_EVENTS_PER_YIELD = 25;
+
+interface TuiSearchModel {
+  hits: SearchHit[];
+  sortedHits: SearchHit[];
+  sessions: SearchSessionGroup[];
+  searchDone: boolean;
+  dirty: boolean;
 }
 
-interface TuiActions {
-  openHit(hit: SearchHit): Promise<void>;
-  resumeHit(hit: SearchHit): Promise<number>;
-}
-
-export interface RunSearchTuiOptions extends Partial<TuiStreams>, Partial<TuiActions> {
+interface DetailSearchState {
+  active: boolean;
   query: string;
-  results: SearchResultsPage;
+  lastQuery: string;
 }
 
-export interface TuiState {
-  selected: number;
-  scrollTop: number;
-  expandedSessionId: string | null;
-}
-
-interface RenderSearchTuiScreenOptions {
-  query: string;
-  results: SearchResultsPage;
-  state: TuiState;
-  width: number;
-  height: number;
-}
-
-const ANSI = {
-  clear: "\u001B[2J",
-  home: "\u001B[H",
-  altOn: "\u001B[?1049h",
-  altOff: "\u001B[?1049l",
-  hideCursor: "\u001B[?25l",
-  showCursor: "\u001B[?25h",
-  reset: "\u001B[0m",
-  bold: "\u001B[1m",
-  dim: "\u001B[2m",
-  cyan: "\u001B[36m",
-  magenta: "\u001B[35m",
-  yellow: "\u001B[33m",
-  inverse: "\u001B[7m",
-} as const;
-
-const MAX_EXPANDED_SNIPPETS = 3;
+export { renderSearchTuiScreen } from "./render.js";
 
 export function createInitialTuiState(): TuiState {
   return {
     selected: 0,
     scrollTop: 0,
     expandedSessionId: null,
+    focus: "list",
+    detailSelected: 0,
+    detailScrollTop: 0,
+    statusMessage: null,
   };
 }
 
@@ -66,6 +67,16 @@ export function toggleExpandedSelection(
   state: TuiState,
   hits: SearchHit[],
 ): TuiState {
+  if (state.expandedSessionId) {
+    return {
+      ...state,
+      expandedSessionId: null,
+      focus: "list",
+      detailSelected: 0,
+      detailScrollTop: 0,
+    };
+  }
+
   const sessions = aggregateSearchHitsBySession(hits);
   const selected = sessions[state.selected];
   if (!selected) {
@@ -74,33 +85,11 @@ export function toggleExpandedSelection(
 
   return {
     ...state,
-    expandedSessionId: state.expandedSessionId === selected.sessionId ? null : selected.sessionId,
+    expandedSessionId: selected.sessionId,
+    focus: "detail",
+    detailSelected: 0,
+    detailScrollTop: 0,
   };
-}
-
-export function renderSearchTuiScreen(options: RenderSearchTuiScreenOptions): string {
-  const sessions = aggregateSearchHitsBySession(options.results.hits);
-  const width = options.width;
-  const bodyHeight = getBodyHeight(options.height);
-  const lines: string[] = [];
-  const clampedState = clampState(options.state, sessions.length, getVisibleSessionCapacity(options.height));
-
-  lines.push(`${ANSI.bold}${ANSI.cyan}codexs${ANSI.reset}  ${truncate(`query: ${options.query}`, width - 10)}`);
-  lines.push(`${ANSI.dim}${formatSummary(sessions, options.results, clampedState)}${ANSI.reset}`);
-  lines.push(divider(width));
-
-  if (sessions.length === 0) {
-    lines.push("No matches found.");
-    lines.push("");
-    lines.push(`${ANSI.dim}Press q, Esc, or Enter to exit.${ANSI.reset}`);
-    return lines.join("\n");
-  }
-
-  lines.push(...renderBodyLines(sessions, clampedState, width, bodyHeight));
-  lines.push(divider(width));
-  lines.push(renderHintBar(width));
-
-  return lines.join("\n");
 }
 
 export async function runSearchTui(options: RunSearchTuiOptions): Promise<number> {
@@ -108,32 +97,269 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
   const stdout = options.stdout ?? process.stdout;
   const openHit = options.openHit ?? (async () => {});
   const resumeHit = options.resumeHit ?? (async () => 0);
+  const iterator = options.hitStream?.[Symbol.asyncIterator]();
+  const model = createTuiSearchModel(options.results?.hits ?? [], !iterator);
   let state = createInitialTuiState();
+  let detailSearch: DetailSearchState = {
+    active: false,
+    query: "",
+    lastQuery: "",
+  };
+  let cleanedUp = false;
+  let renderTimer: NodeJS.Timeout | null = null;
+  let animationTimer: NodeJS.Timeout | null = null;
+  let lastRenderAt = 0;
+  let searchEventsSinceYield = 0;
 
   readline.emitKeypressEvents(stdin);
   const previousRawMode = stdin.isRaw;
   stdin.setRawMode?.(true);
   stdin.resume();
   stdin.setEncoding("utf8");
+  stdout.write(`${ANSI.altOn}${ANSI.hideCursor}`);
 
-  writeFrame(stdout, renderSearchTuiScreen({
-    query: options.query,
-    results: options.results,
-    state,
-    width: stdout.columns ?? 80,
-    height: stdout.rows ?? 24,
+  const getResults = () => materializeTuiResults(model);
+  const getSessions = () => materializeTuiSessions(model, options.searchState?.sessionSummaries);
+  const render = () => {
+    lastRenderAt = Date.now();
+    writeFrame(stdout, renderSearchTuiScreen({
+      query: options.query,
+      results: getResults(),
+      sessions: getSessions(),
+      state,
+      width: stdout.columns ?? 80,
+      height: stdout.rows ?? 24,
+      caseSensitive: options.caseSensitive,
+      searching: !model.searchDone,
+      sourceLabel: options.sourceLabel,
+      rangeLabel: options.rangeLabel,
+      cwdLabel: options.cwdLabel,
+      progress: options.searchState?.progress ?? null,
+      prompt: detailSearch.active ? `/${detailSearch.query}` : null,
+      searchHint: detailSearch.active ? "detail-search" : null,
+    }));
+  };
+  const clearScheduledRender = () => {
+    if (renderTimer) {
+      clearTimeout(renderTimer);
+      renderTimer = null;
+    }
+  };
+  const clearAnimationRender = () => {
+    if (animationTimer) {
+      clearTimeout(animationTimer);
+      animationTimer = null;
+    }
+  };
+  const scheduleSearchRender = () => {
+    if (cleanedUp) {
+      return;
+    }
+
+    const elapsed = Date.now() - lastRenderAt;
+    if (elapsed >= SEARCH_RENDER_INTERVAL_MS) {
+      clearScheduledRender();
+      render();
+      return;
+    }
+
+    if (!renderTimer) {
+      renderTimer = setTimeout(() => {
+        renderTimer = null;
+        if (!cleanedUp) {
+          render();
+        }
+      }, SEARCH_RENDER_INTERVAL_MS - elapsed);
+      renderTimer.unref?.();
+    }
+  };
+  const scheduleAnimationRender = () => {
+    if (cleanedUp || model.searchDone || animationTimer) {
+      return;
+    }
+
+    animationTimer = setTimeout(() => {
+      animationTimer = null;
+      if (cleanedUp || model.searchDone) {
+        return;
+      }
+
+      clearScheduledRender();
+      render();
+      scheduleAnimationRender();
+    }, ANIMATION_RENDER_INTERVAL_MS);
+    animationTimer.unref?.();
+  };
+  const finish = async () => {
+    if (cleanedUp) {
+      return;
+    }
+
+    cleanedUp = true;
+    clearScheduledRender();
+    clearAnimationRender();
+    options.cancelSearch?.();
+    await iterator?.return?.();
+    await cleanupTerminal(stdin, stdout, previousRawMode);
+  };
+
+  let pendingInput = waitForTuiEvent(stdin, stdout).then((event) => ({
+    type: "input" as const,
+    event,
   }));
+  let pendingSearch = nextSearchEvent(iterator);
+  const armInput = () => {
+    pendingInput = waitForTuiEvent(stdin, stdout).then((event) => ({
+      type: "input" as const,
+      event,
+    }));
+  };
+
+  if (options.searchState) {
+    options.searchState.notify = () => {
+      model.dirty = true;
+      scheduleSearchRender();
+    };
+  }
+
+  render();
+  scheduleAnimationRender();
 
   try {
     while (true) {
-      const event = await waitForKeypress(stdin);
-      const key = event.key;
-      const sessions = aggregateSearchHitsBySession(options.results.hits);
+      const event = await Promise.race([
+        pendingInput,
+        ...(pendingSearch ? [pendingSearch] : []),
+      ]);
+
+      if (event.type === "search") {
+        pendingSearch = null;
+        if (event.result.done) {
+          model.searchDone = true;
+        } else {
+          appendTuiSearchHit(model, event.result.value);
+          pendingSearch = nextSearchEvent(iterator);
+        }
+
+        if (model.searchDone) {
+          clearAnimationRender();
+          clearScheduledRender();
+          render();
+        } else {
+          scheduleSearchRender();
+          scheduleAnimationRender();
+        }
+
+        searchEventsSinceYield += 1;
+        if (searchEventsSinceYield >= SEARCH_EVENTS_PER_YIELD) {
+          searchEventsSinceYield = 0;
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        continue;
+      }
+
+      const inputEvent = event.event;
+      const results = getResults();
+      const sessions = getSessions();
+      const viewport = getPanelContentSize(stdout.columns ?? 80, stdout.rows ?? 24);
+      const visibleSessions = getVisibleSessionCapacityForLayout(sessions, state, viewport.width, viewport.height);
+
+      if (inputEvent.type === "resize") {
+        state = clampStateForViewport(state, sessions, viewport.width, viewport.height);
+        state = syncDetailScroll(state, getExpandedSession(sessions, state), viewport.width, viewport.height);
+        armInput();
+        clearScheduledRender();
+        render();
+        continue;
+      }
+
+      const key = inputEvent.key;
+      const expanded = getExpandedSession(sessions, state);
+
+      if (detailSearch.active) {
+        if (key.ctrl && key.name === "c") {
+          return 0;
+        }
+
+        if (key.name === "escape") {
+          detailSearch = { ...detailSearch, active: false, query: "" };
+          state = clearStatus(state);
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "backspace" || key.name === "delete") {
+          detailSearch = {
+            ...detailSearch,
+            query: detailSearch.query.slice(0, -1),
+          };
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "return") {
+          detailSearch = { ...detailSearch, active: false };
+          if (!expanded || detailSearch.query.trim() === "") {
+            detailSearch = { ...detailSearch, query: "" };
+            state = clearStatus(state);
+          } else {
+            const query = detailSearch.query.trim();
+            const matchIndex = findMatchingPreviewIndex(
+              expanded.matchPreviews,
+              query,
+              options.caseSensitive ?? false,
+              state.detailSelected,
+              1,
+              true,
+            );
+            if (matchIndex === -1) {
+              state = withStatus(state, `No detail matches for "${query}".`);
+            } else {
+              detailSearch = {
+                active: false,
+                query: "",
+                lastQuery: query,
+              };
+              state = clearStatus({
+                ...state,
+                focus: "detail",
+                detailSelected: matchIndex,
+                detailScrollTop: matchIndex,
+              });
+              state = syncDetailScroll(state, expanded, viewport.width, viewport.height);
+            }
+          }
+
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (isPrintableInput(inputEvent.text, key)) {
+          detailSearch = {
+            ...detailSearch,
+            query: `${detailSearch.query}${inputEvent.text}`,
+          };
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        armInput();
+        continue;
+      }
 
       if (sessions.length === 0) {
         if (key.name === "q" || key.name === "escape" || key.name === "return" || (key.ctrl && key.name === "c")) {
           return 0;
         }
+        armInput();
         continue;
       }
 
@@ -146,194 +372,303 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
       }
 
       if (key.name === "return" || key.name === "o") {
-        await cleanupTerminal(stdin, stdout, previousRawMode);
-        const hit = getSelectedHit(options.results.hits, sessions, state.selected);
+        const hit = getSelectedHit(results.hits, sessions, state.selected);
+        if (hit?.source === "archived") {
+          state = withStatus(state, archivedUnavailableMessage(hit));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        if (key.name === "return") {
+          await finish();
+          if (hit) {
+            await openHit(hit);
+          }
+          return 0;
+        }
+
         if (hit) {
           await openHit(hit);
         }
-        return 0;
-      }
 
-      if (key.name === "r") {
-        await cleanupTerminal(stdin, stdout, previousRawMode);
-        const hit = getSelectedHit(options.results.hits, sessions, state.selected);
-        return hit ? resumeHit(hit) : 0;
-      }
-
-      if (key.name === "space" || key.name === "l") {
-        state = toggleExpandedSelection(state, options.results.hits);
-      } else if (key.name === "up" || key.name === "k") {
-        state = moveSelection(state, -1, sessions.length, getVisibleSessionCapacity(stdout.rows ?? 24));
-      } else if (key.name === "down" || key.name === "j") {
-        state = moveSelection(state, 1, sessions.length, getVisibleSessionCapacity(stdout.rows ?? 24));
-      } else if (key.name === "pageup") {
-        state = moveSelection(state, -getVisibleSessionCapacity(stdout.rows ?? 24), sessions.length, getVisibleSessionCapacity(stdout.rows ?? 24));
-      } else if (key.name === "pagedown") {
-        state = moveSelection(state, getVisibleSessionCapacity(stdout.rows ?? 24), sessions.length, getVisibleSessionCapacity(stdout.rows ?? 24));
-      } else if (key.ctrl && key.name === "u") {
-        state = moveSelection(state, -Math.max(1, Math.floor(getVisibleSessionCapacity(stdout.rows ?? 24) / 2)), sessions.length, getVisibleSessionCapacity(stdout.rows ?? 24));
-      } else if (key.ctrl && key.name === "d") {
-        state = moveSelection(state, Math.max(1, Math.floor(getVisibleSessionCapacity(stdout.rows ?? 24) / 2)), sessions.length, getVisibleSessionCapacity(stdout.rows ?? 24));
-      } else if (key.name === "g" && !key.shift) {
-        state = moveTo(state, 0, getVisibleSessionCapacity(stdout.rows ?? 24));
-      } else if (key.name === "g" && key.shift) {
-        state = moveTo(state, sessions.length - 1, getVisibleSessionCapacity(stdout.rows ?? 24));
-      } else {
+        armInput();
+        clearScheduledRender();
+        render();
         continue;
       }
 
-      writeFrame(stdout, renderSearchTuiScreen({
-        query: options.query,
-        results: options.results,
+      if (key.name === "r") {
+        const hit = getSelectedHit(results.hits, sessions, state.selected);
+        if (hit?.source === "archived") {
+          state = withStatus(state, archivedUnavailableMessage(hit));
+          armInput();
+          clearScheduledRender();
+          render();
+          continue;
+        }
+
+        await finish();
+        return hit ? resumeHit(hit) : 0;
+      }
+
+      if (inputEvent.text === "/") {
+        const nextState = expanded
+          ? state.focus === "detail"
+            ? state
+            : clearStatus({
+              ...state,
+              expandedSessionId: sessions[state.selected]?.sessionId ?? state.expandedSessionId,
+              focus: "detail",
+              detailSelected: 0,
+              detailScrollTop: 0,
+            })
+          : clearStatus(toggleExpandedSelection(state, results.hits));
+        const nextExpanded = getExpandedSession(sessions, nextState);
+
+        if (!nextExpanded) {
+          armInput();
+          continue;
+        }
+
+        state = clearStatus({
+          ...nextState,
+          expandedSessionId: nextExpanded.sessionId,
+          focus: "detail",
+        });
+        state = syncDetailScroll(state, nextExpanded, viewport.width, viewport.height);
+        detailSearch = {
+          ...detailSearch,
+          active: true,
+          query: "",
+        };
+        armInput();
+        clearScheduledRender();
+        render();
+        continue;
+      }
+
+      if ((key.name === "n") && expanded && detailSearch.lastQuery) {
+        const matchIndex = findMatchingPreviewIndex(
+          expanded.matchPreviews,
+          detailSearch.lastQuery,
+          options.caseSensitive ?? false,
+          state.detailSelected,
+          key.shift ? -1 : 1,
+          false,
+        );
+        if (matchIndex === -1) {
+          state = withStatus(state, `No further detail matches for "${detailSearch.lastQuery}".`);
+        } else {
+          state = clearStatus({
+            ...state,
+            focus: "detail",
+            detailSelected: matchIndex,
+            detailScrollTop: matchIndex,
+          });
+          state = syncDetailScroll(state, expanded, viewport.width, viewport.height);
+        }
+        armInput();
+        clearScheduledRender();
+        render();
+        continue;
+      }
+
+      const detailPanelHeight = getDetailPanelHeightForLayout(
+        sessions,
         state,
-        width: stdout.columns ?? 80,
-        height: stdout.rows ?? 24,
-      }));
+        viewport.width,
+        viewport.height,
+      );
+      const detailPageStep = getDetailPreviewPageStep(detailPanelHeight, Boolean(expanded?.cwd));
+      if (key.name === "space") {
+        state = clearStatus(toggleExpandedSelection(state, results.hits));
+        state = clampStateForViewport(state, sessions, viewport.width, viewport.height);
+      } else if ((key.name === "right" || key.name === "l") && expanded && state.focus === "list") {
+        state = clearStatus({
+          ...state,
+          expandedSessionId: sessions[state.selected]?.sessionId ?? expanded.sessionId,
+          focus: "detail",
+        });
+      } else if (((key.name === "left" || key.name === "h") && expanded && state.focus === "detail")) {
+        state = clearStatus({
+          ...state,
+          focus: "list",
+        });
+      } else if (key.name === "tab" && expanded) {
+        state = clearStatus({
+          ...state,
+          expandedSessionId: state.focus === "list"
+            ? (sessions[state.selected]?.sessionId ?? expanded.sessionId)
+            : expanded.sessionId,
+          focus: state.focus === "detail" ? "list" : "detail",
+          detailSelected: state.focus === "detail" ? state.detailSelected : 0,
+          detailScrollTop: state.focus === "detail" ? state.detailScrollTop : 0,
+        });
+      } else if ((key.name === "up" || key.name === "k") && state.focus === "detail" && expanded) {
+        state = clearStatus({
+          ...state,
+          detailSelected: clamp(state.detailSelected - 1, 0, Math.max(0, expanded.matchPreviews.length - 1)),
+        });
+      } else if ((key.name === "down" || key.name === "j") && state.focus === "detail" && expanded) {
+        state = clearStatus({
+          ...state,
+          detailSelected: clamp(state.detailSelected + 1, 0, Math.max(0, expanded.matchPreviews.length - 1)),
+        });
+      } else if (key.name === "pageup" && state.focus === "detail" && expanded) {
+        state = clearStatus({
+          ...state,
+          detailSelected: clamp(state.detailSelected - detailPageStep, 0, Math.max(0, expanded.matchPreviews.length - 1)),
+        });
+      } else if (key.name === "pagedown" && state.focus === "detail" && expanded) {
+        state = clearStatus({
+          ...state,
+          detailSelected: clamp(state.detailSelected + detailPageStep, 0, Math.max(0, expanded.matchPreviews.length - 1)),
+        });
+      } else if (key.ctrl && key.name === "u" && state.focus === "detail" && expanded) {
+        state = clearStatus({
+          ...state,
+          detailSelected: clamp(state.detailSelected - Math.max(1, Math.floor(detailPageStep / 2)), 0, Math.max(0, expanded.matchPreviews.length - 1)),
+        });
+      } else if (key.ctrl && key.name === "d" && state.focus === "detail" && expanded) {
+        state = clearStatus({
+          ...state,
+          detailSelected: clamp(state.detailSelected + Math.max(1, Math.floor(detailPageStep / 2)), 0, Math.max(0, expanded.matchPreviews.length - 1)),
+        });
+      } else if (key.name === "g" && !key.shift && state.focus === "detail" && expanded) {
+        state = clearStatus({
+          ...state,
+          detailSelected: 0,
+          detailScrollTop: 0,
+        });
+      } else if (key.name === "g" && key.shift && state.focus === "detail" && expanded) {
+        state = clearStatus({
+          ...state,
+          detailSelected: Math.max(0, expanded.matchPreviews.length - 1),
+          detailScrollTop: Math.max(0, expanded.matchPreviews.length - 1),
+        });
+      } else if (key.name === "up" || key.name === "k") {
+        state = clearStatus(syncExpandedSelection(
+          moveSelection(state, -1, sessions.length, visibleSessions),
+          sessions,
+        ));
+      } else if (key.name === "down" || key.name === "j") {
+        state = clearStatus(syncExpandedSelection(
+          moveSelection(state, 1, sessions.length, visibleSessions),
+          sessions,
+        ));
+      } else if (key.name === "pageup") {
+        state = clearStatus(syncExpandedSelection(
+          moveSelection(state, -visibleSessions, sessions.length, visibleSessions),
+          sessions,
+        ));
+      } else if (key.name === "pagedown") {
+        state = clearStatus(syncExpandedSelection(
+          moveSelection(state, visibleSessions, sessions.length, visibleSessions),
+          sessions,
+        ));
+      } else if (key.ctrl && key.name === "u") {
+        state = clearStatus(syncExpandedSelection(
+          moveSelection(state, -Math.max(1, Math.floor(visibleSessions / 2)), sessions.length, visibleSessions),
+          sessions,
+        ));
+      } else if (key.ctrl && key.name === "d") {
+        state = clearStatus(syncExpandedSelection(
+          moveSelection(state, Math.max(1, Math.floor(visibleSessions / 2)), sessions.length, visibleSessions),
+          sessions,
+        ));
+      } else if (key.name === "g" && !key.shift) {
+        state = clearStatus(syncExpandedSelection(
+          moveTo(state, 0, visibleSessions),
+          sessions,
+        ));
+      } else if (key.name === "g" && key.shift) {
+        state = clearStatus(syncExpandedSelection(
+          moveTo(state, sessions.length - 1, visibleSessions),
+          sessions,
+        ));
+      } else {
+        armInput();
+        continue;
+      }
+
+      state = syncDetailScroll(state, getExpandedSession(sessions, state), viewport.width, viewport.height);
+      armInput();
+      clearScheduledRender();
+      render();
     }
   } finally {
-    await cleanupTerminal(stdin, stdout, previousRawMode);
-  }
-}
-
-function renderBodyLines(
-  sessions: SearchSessionGroup[],
-  state: TuiState,
-  width: number,
-  bodyHeight: number,
-): string[] {
-  const lines: string[] = [];
-
-  for (let index = state.scrollTop; index < sessions.length; index += 1) {
-    const session = sessions[index];
-    if (!session) {
-      break;
+    if (options.searchState) {
+      options.searchState.notify = undefined;
     }
-
-    if (lines.length >= bodyHeight) {
-      break;
-    }
-
-    lines.push(renderSessionRow(session, index === state.selected, width));
-
-    if (session.sessionId === state.expandedSessionId) {
-      const detailLines = renderExpandedDetails(session, width);
-      for (const detailLine of detailLines) {
-        if (lines.length >= bodyHeight) {
-          break;
-        }
-        lines.push(detailLine);
-      }
-    }
+    await finish();
   }
-
-  while (lines.length < bodyHeight) {
-    lines.push("");
-  }
-
-  return lines;
 }
 
-function renderSessionRow(session: SearchSessionGroup, selected: boolean, width: number): string {
-  const prefix = selected ? `${ANSI.inverse}›` : " ";
-  const row = `${prefix} ${formatTimestamp(session.timestamp)}  [${session.source}]  ${session.sessionId}  ${session.matchCount} ${session.matchCount === 1 ? "match" : "matches"}  ${session.previewSnippet}`;
-  return truncate(`${row}${selected ? ANSI.reset : ""}`, width);
-}
-
-function renderExpandedDetails(session: SearchSessionGroup, width: number): string[] {
-  const detailLines = [
-    truncate(`  ${ANSI.magenta}cwd:${ANSI.reset} ${session.cwd ?? "-"}`, width),
-    truncate(`  ${ANSI.magenta}open:${ANSI.reset} ${session.deepLink}`, width),
-    truncate(`  ${ANSI.magenta}resume:${ANSI.reset} ${session.resumeCommand}`, width),
-  ];
-
-  const snippets = session.snippets.slice(0, MAX_EXPANDED_SNIPPETS);
-  snippets.forEach((snippet, index) => {
-    detailLines.push(truncate(`  ${index + 1}. ${ANSI.yellow}${snippet}${ANSI.reset}`, width));
-  });
-
-  if (session.snippets.length > snippets.length) {
-    detailLines.push(truncate(`  ${ANSI.dim}+${session.snippets.length - snippets.length} more matches${ANSI.reset}`, width));
-  }
-
-  return detailLines;
-}
-
-function renderHintBar(width: number): string {
-  const hint = [
-    formatKey("Enter"), " open",
-    "    ", formatKey("r"), " resume",
-    "    ", formatKey("Space"), " details",
-    "    ", formatKey("j/k"), " move",
-    "    ", formatKey("^d/^u"), " scroll",
-    "    ", formatKey("g/G"), " jump",
-    "    ", formatKey("q"), " quit",
-  ].join("");
-
-  return truncate(hint, width);
-}
-
-function formatKey(label: string): string {
-  return `${ANSI.bold}${label}${ANSI.reset}`;
-}
-
-function formatSummary(sessions: SearchSessionGroup[], results: SearchResultsPage, state: TuiState): string {
-  const selected = sessions.length === 0 ? 0 : Math.min(state.selected + 1, sessions.length);
-  const parts = [
-    `${sessions.length} threads`,
-    `${results.hits.length} matches`,
-    `selected ${selected}/${sessions.length}`,
-  ];
-
-  return parts.join("  ");
-}
-
-function divider(width: number): string {
-  return `${ANSI.dim}${"─".repeat(Math.max(1, width))}${ANSI.reset}`;
-}
-
-function formatTimestamp(timestamp: string): string {
-  return timestamp.slice(0, 16).replace("T", " ");
-}
-
-function truncate(value: string, width: number): string {
-  if (width <= 0) {
-    return "";
-  }
-
-  const plain = stripAnsi(value);
-  if (plain.length <= width) {
-    return value;
-  }
-
-  const target = Math.max(1, width - 1);
-  return `${plain.slice(0, target)}…`;
-}
-
-function stripAnsi(value: string): string {
-  return value.replace(/\u001B\[[0-9;?]*[A-Za-z]/g, "");
-}
-
-function getBodyHeight(height: number): number {
-  return Math.max(5, height - 5);
-}
-
-function getVisibleSessionCapacity(height: number): number {
-  return Math.max(3, height - 10);
-}
-
-function clampState(state: TuiState, size: number, visibleSessions: number): TuiState {
-  if (size === 0) {
-    return createInitialTuiState();
-  }
-
-  const selected = clamp(state.selected, 0, size - 1);
-  const maxScrollTop = Math.max(0, size - visibleSessions);
-
+function clearStatus(state: TuiState): TuiState {
   return {
-    selected,
-    scrollTop: clamp(state.scrollTop, 0, maxScrollTop),
-    expandedSessionId: state.expandedSessionId,
+    ...state,
+    statusMessage: null,
   };
+}
+
+function withStatus(state: TuiState, statusMessage: string): TuiState {
+  return {
+    ...state,
+    statusMessage,
+  };
+}
+
+function archivedUnavailableMessage(hit: SearchHit): string {
+  return `Archived thread cannot be reopened directly: ${hit.sessionId}. Use --active to search reopenable threads.`;
+}
+
+function createTuiSearchModel(initialHits: SearchHit[], searchDone: boolean): TuiSearchModel {
+  return {
+    hits: [...initialHits],
+    sortedHits: [],
+    sessions: [],
+    searchDone,
+    dirty: true,
+  };
+}
+
+function appendTuiSearchHit(model: TuiSearchModel, hit: SearchHit): void {
+  model.hits.push(hit);
+  model.dirty = true;
+}
+
+function materializeTuiResults(model: TuiSearchModel): SearchResultsPage {
+  ensureTuiSearchModel(model);
+  return {
+    hits: model.sortedHits,
+    page: 1,
+    pageSize: Math.max(5, model.sortedHits.length),
+    offset: 0,
+    hasMore: !model.searchDone,
+  };
+}
+
+function materializeTuiSessions(
+  model: TuiSearchModel,
+  sessionSummaries?: ReadonlyMap<string, { sessionId: string; messageCount: number }>,
+): SearchSessionGroup[] {
+  ensureTuiSearchModel(model, sessionSummaries);
+  return model.sessions;
+}
+
+function ensureTuiSearchModel(
+  model: TuiSearchModel,
+  sessionSummaries?: ReadonlyMap<string, { sessionId: string; messageCount: number }>,
+): void {
+  if (!model.dirty) {
+    return;
+  }
+
+  model.sortedHits = [...model.hits].sort((left, right) => right.timestamp.localeCompare(left.timestamp));
+  model.sessions = aggregateSearchHitsBySessionWithSummaries(model.sortedHits, sessionSummaries);
+  model.dirty = false;
 }
 
 function moveSelection(state: TuiState, delta: number, size: number, visibleSessions: number): TuiState {
@@ -349,6 +684,7 @@ function moveTo(state: TuiState, index: number, visibleSessions: number): TuiSta
   const nextState: TuiState = {
     ...state,
     selected: Math.max(0, index),
+    focus: "list",
   };
 
   if (nextState.selected < nextState.scrollTop) {
@@ -362,6 +698,89 @@ function moveTo(state: TuiState, index: number, visibleSessions: number): TuiSta
   }
 
   return nextState;
+}
+
+function getExpandedSession(
+  sessions: SearchSessionGroup[],
+  state: TuiState,
+): SearchSessionGroup | null {
+  if (!state.expandedSessionId) {
+    return null;
+  }
+
+  if (state.focus === "list") {
+    return sessions[state.selected]
+      ?? sessions.find((session) => session.sessionId === state.expandedSessionId)
+      ?? null;
+  }
+
+  return sessions.find((session) => session.sessionId === state.expandedSessionId)
+    ?? sessions[state.selected]
+    ?? null;
+}
+
+function syncExpandedSelection(
+  state: TuiState,
+  sessions: SearchSessionGroup[],
+): TuiState {
+  if (!state.expandedSessionId || state.focus !== "list") {
+    return state;
+  }
+
+  const selectedSession = sessions[state.selected];
+  if (!selectedSession) {
+    return state;
+  }
+
+  return {
+    ...state,
+    detailSelected: 0,
+    detailScrollTop: 0,
+  };
+}
+
+function syncDetailScroll(
+  state: TuiState,
+  expanded: SearchSessionGroup | null,
+  width: number,
+  height: number,
+): TuiState {
+  if (!expanded) {
+    return {
+      ...state,
+      detailScrollTop: 0,
+    };
+  }
+
+  const detailWidth = usesWideDetailsLayout(width)
+    ? getSideBySidePaneWidths(width).rightWidth
+    : width;
+  const detailHeight = getDetailPanelHeightForLayout([expanded], {
+    ...state,
+    expandedSessionId: expanded.sessionId,
+  }, width, height);
+  const previewHeight = Math.max(0, detailHeight - getDetailMetadataLineCount(detailHeight, Boolean(expanded.cwd)));
+  const maxIndex = Math.max(0, expanded.matchPreviews.length - 1);
+  const selected = clamp(state.detailSelected, 0, maxIndex);
+  let scrollTop = clamp(state.detailScrollTop, 0, maxIndex);
+
+  if (selected < scrollTop) {
+    scrollTop = selected;
+  }
+
+  while (scrollTop < selected) {
+    const range = measureVisibleDetailPreviewRange(expanded.matchPreviews, detailWidth, previewHeight, scrollTop);
+    if (selected <= range.endIndex) {
+      break;
+    }
+    scrollTop += 1;
+  }
+
+  return {
+    ...state,
+    detailSelected: selected,
+    detailScrollTop: scrollTop,
+  };
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -381,26 +800,111 @@ function getSelectedHit(
   return hits.find((hit) => hit.sessionId === sessionId) ?? null;
 }
 
+function findMatchingPreviewIndex(
+  previews: SearchSessionGroup["matchPreviews"],
+  query: string,
+  caseSensitive: boolean,
+  currentIndex: number,
+  direction: 1 | -1,
+  includeCurrent: boolean,
+): number {
+  if (!query || previews.length === 0) {
+    return -1;
+  }
+
+  let index = includeCurrent
+    ? clamp(currentIndex, 0, previews.length - 1)
+    : wrapIndex(currentIndex + direction, previews.length);
+
+  for (let scanned = 0; scanned < previews.length; scanned += 1) {
+    const preview = previews[index];
+    if (preview && previewMatchesQuery(preview, query, caseSensitive)) {
+      return index;
+    }
+
+    index = wrapIndex(index + direction, previews.length);
+  }
+
+  return -1;
+}
+
+function previewMatchesQuery(
+  preview: SearchSessionGroup["matchPreviews"][number],
+  query: string,
+  caseSensitive: boolean,
+): boolean {
+  const haystack = [
+    preview.label,
+    preview.text,
+    preview.secondaryText ?? "",
+  ].join("\n");
+  const normalizedHaystack = caseSensitive ? haystack : haystack.toLowerCase();
+  const normalizedQuery = caseSensitive ? query : query.toLowerCase();
+  return normalizedHaystack.includes(normalizedQuery);
+}
+
+function wrapIndex(value: number, size: number): number {
+  if (size === 0) {
+    return 0;
+  }
+
+  return ((value % size) + size) % size;
+}
+
+function isPrintableInput(text: string, key: readline.Key): boolean {
+  return Boolean(
+    text
+    && text.length === 1
+    && text >= " "
+    && !key.ctrl
+    && !key.meta,
+  );
+}
+
 async function cleanupTerminal(
   stdin: NodeJS.ReadStream,
   stdout: NodeJS.WriteStream,
   previousRawMode: boolean | undefined,
 ): Promise<void> {
   stdin.setRawMode?.(Boolean(previousRawMode));
+  stdin.pause();
   stdout.write(`${ANSI.reset}${ANSI.showCursor}${ANSI.altOff}`);
 }
 
 function writeFrame(stdout: NodeJS.WriteStream, screen: string): void {
-  stdout.write(`${ANSI.altOn}${ANSI.hideCursor}${ANSI.clear}${ANSI.home}${screen}`);
+  stdout.write(`${ANSI.clear}${ANSI.home}${screen}`);
 }
 
-function waitForKeypress(stdin: NodeJS.ReadStream): Promise<{ key: readline.Key }> {
+function nextSearchEvent(iterator: AsyncIterator<SearchHit> | undefined): Promise<SearchStreamEvent> | null {
+  if (!iterator) {
+    return null;
+  }
+
+  return iterator.next().then((result) => ({
+    type: "search" as const,
+    result,
+  }));
+}
+
+function waitForTuiEvent(
+  stdin: NodeJS.ReadStream,
+  stdout: NodeJS.WriteStream,
+): Promise<TuiInputEvent> {
   return new Promise((resolve) => {
-    const onKeypress = (_str: string, key: readline.Key) => {
+    const onKeypress = (text: string, key: readline.Key) => {
+      cleanup();
+      resolve({ type: "key", key, text });
+    };
+    const onResize = () => {
+      cleanup();
+      resolve({ type: "resize" });
+    };
+    const cleanup = () => {
       stdin.off("keypress", onKeypress);
-      resolve({ key });
+      stdout.off("resize", onResize);
     };
 
     stdin.on("keypress", onKeypress);
+    stdout.on("resize", onResize);
   });
 }

@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import { Writable } from "node:stream";
 import { join } from "node:path";
 
-import { runCli } from "../src/main.js";
+import { getOpenUrlCandidates, runCli as runCliBase } from "../src/main.js";
+import type { SearchLogRecord } from "../src/cli/search-log.js";
 import { type SearchResultsPage } from "../src/search/session-reader.js";
 
 const fixturesDir = join(import.meta.dirname, "fixtures", "codex-home");
+const fixedNow = new Date("2026-04-16T12:00:00.000Z");
 
 function createMemoryStream() {
   let text = "";
@@ -23,30 +25,39 @@ function createMemoryStream() {
   };
 }
 
+function runCli(
+  argv: string[],
+  options: Parameters<typeof runCliBase>[1] = {},
+): Promise<number> {
+  return runCliBase(argv, {
+    writeSearchLog: async () => {},
+    ...options,
+  });
+}
+
 test("runCli uses TUI by default on a TTY", async () => {
   const stdout = createMemoryStream();
   const stderr = createMemoryStream();
   let invoked = false;
-  let capturedResults: SearchResultsPage | null = null;
 
   const exitCode = await runCli(["quota", "--root-dir", fixturesDir], {
     stdout: stdout.stream as NodeJS.WriteStream,
     stderr: stderr.stream as NodeJS.WriteStream,
     isInteractiveTty: true,
-    runTui: async ({ results }) => {
+    now: fixedNow,
+    runTui: async ({ hitStream }) => {
       invoked = true;
-      capturedResults = results;
+      assert(hitStream);
       return 0;
     },
   });
 
   assert.equal(exitCode, 0);
   assert.equal(invoked, true);
-  assert.equal(capturedResults?.hits.length, 4);
   assert.equal(stderr.read(), "");
 });
 
-test("runCli requires --json outside a TTY", async () => {
+test("runCli requires machine-readable output outside a TTY", async () => {
   const stdout = createMemoryStream();
   const stderr = createMemoryStream();
 
@@ -54,6 +65,7 @@ test("runCli requires --json outside a TTY", async () => {
     stdout: stdout.stream as NodeJS.WriteStream,
     stderr: stderr.stream as NodeJS.WriteStream,
     isInteractiveTty: false,
+    now: fixedNow,
   });
 
   assert.equal(exitCode, 1);
@@ -68,6 +80,7 @@ test("runCli prints JSON search results", async () => {
     stdout: stdout.stream as NodeJS.WriteStream,
     stderr: stderr.stream as NodeJS.WriteStream,
     isInteractiveTty: false,
+    now: fixedNow,
   });
 
   assert.equal(exitCode, 0);
@@ -75,22 +88,182 @@ test("runCli prints JSON search results", async () => {
   assert.equal(parsed.hits.length, 2);
   assert.equal(parsed.page, 1);
   assert.equal(parsed.pageSize, 2);
-  assert.equal(parsed.hasMore, true);
-  assert.equal(parsed.total, 4);
+  assert.equal(parsed.hasMore, false);
+  assert.equal(parsed.total, 2);
+  assert.equal(stderr.read(), "");
+});
+
+test("runCli treats arguments after -- as a literal keyword", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+
+  const exitCode = await runCli(["--json", "--root-dir", fixturesDir, "--", "--all"], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    isInteractiveTty: false,
+    now: fixedNow,
+  });
+
+  assert.equal(exitCode, 0);
+  const parsed = JSON.parse(stdout.read()) as SearchResultsPage;
+  assert.equal(parsed.hits.length, 0);
+  assert.equal(stderr.read(), "");
+});
+
+test("runCli writes a compact search metadata log for completed searches", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+  const records: SearchLogRecord[] = [];
+
+  const exitCode = await runCli(["quota", "--json", "--root-dir", fixturesDir], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    isInteractiveTty: false,
+    now: fixedNow,
+    writeSearchLog: async (_codexHomeDir, record) => {
+      records.push(record);
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.type, "search");
+  assert.equal(records[0]?.mode, "json");
+  assert.equal(records[0]?.status, "completed");
+  assert.equal(records[0]?.query, "quota");
+  assert.equal(records[0]?.flags.sourceMode, "active");
+  assert.equal(records[0]?.flags.view, "useful");
+  assert.equal(records[0]?.results.hits, 2);
+  assert.equal(records[0]?.results.threads, 1);
+  assert.equal(typeof records[0]?.durationMs, "number");
+  assert.equal(stderr.read(), "");
+});
+
+test("runCli writes a cancelled search metadata log when TUI stops early", async () => {
+  const records: SearchLogRecord[] = [];
+
+  const exitCode = await runCli(["quota", "--root-dir", fixturesDir], {
+    isInteractiveTty: true,
+    now: fixedNow,
+    runTui: async ({ hitStream, cancelSearch }) => {
+      for await (const _hit of hitStream ?? []) {
+        cancelSearch?.();
+        break;
+      }
+      return 0;
+    },
+    writeSearchLog: async (_codexHomeDir, record) => {
+      records.push(record);
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.mode, "tui");
+  assert.equal(records[0]?.status, "cancelled");
+  assert.equal(records[0]?.results.hits, 1);
+  assert.equal(records[0]?.results.threads, 1);
+});
+
+test("runCli prints JSONL search events", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+
+  const exitCode = await runCli(["quota", "--jsonl", "--root-dir", fixturesDir], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    isInteractiveTty: false,
+    now: fixedNow,
+  });
+
+  assert.equal(exitCode, 0);
+  const events = stdout.read().trim().split("\n").map((line) => JSON.parse(line) as {
+    type: string;
+    progress?: Record<string, unknown>;
+  });
+  assert(events.some((event) => event.type === "progress"));
+  assert(events.some((event) => event.type === "hit"));
+  assert.equal("fileStates" in (events.find((event) => event.type === "progress")?.progress ?? {}), false);
+  assert.equal(events.at(-1)?.type, "summary");
   assert.equal(stderr.read(), "");
 });
 
 test("runCli reports usage errors for missing keyword", async () => {
-  const stdout = createMemoryStream();
-  const stderr = createMemoryStream();
+  const missingStdout = createMemoryStream();
+  const missingStderr = createMemoryStream();
+  const helpStdout = createMemoryStream();
+  const helpStderr = createMemoryStream();
 
   const exitCode = await runCli([], {
-    stdout: stdout.stream as NodeJS.WriteStream,
-    stderr: stderr.stream as NodeJS.WriteStream,
+    stdout: missingStdout.stream as NodeJS.WriteStream,
+    stderr: missingStderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
+  });
+  const helpExitCode = await runCli(["--help"], {
+    stdout: helpStdout.stream as NodeJS.WriteStream,
+    stderr: helpStderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
   });
 
   assert.equal(exitCode, 1);
-  assert.match(stderr.read(), /codexs <keyword>/);
+  assert.equal(helpExitCode, 0);
+  assert.equal(missingStdout.read(), "");
+  assert.equal(helpStderr.read(), "");
+  assert.equal(missingStderr.read(), helpStdout.read());
+});
+
+test("runCli prints help with split usage lines and grouped search flags", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+
+  const exitCode = await runCli(["--help"], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(stderr.read(), "");
+  const help = stdout.read();
+  assert.match(help, /Usage:\n  codexs --version\n  codexs --help\n  codexs <keyword>\n  codexs lucky <keyword>\n  codexs <keyword> --json \[--page <N>\] \[--limit <N>\] \[--offset <N>\] \[--with-total\]\n  codexs <keyword> --jsonl\n  codexs -- <keyword-starting-with-dash>/);
+  assert.match(help, /\nShared search flags:\n/);
+  assert.doesNotMatch(help, /\[--active\|--archived\|--all\]/);
+});
+
+test("runCli suggests corrections for unknown flags", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+
+  const exitCode = await runCli(["quota", "--jsno"], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(stdout.read(), "");
+  assert.equal(
+    stderr.read(),
+    'Error: Unknown flag "--jsno".\nDid you mean "--json"?\n',
+  );
+});
+
+test("runCli suggests corrections for mistyped commands", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+
+  const exitCode = await runCli(["lukcy", "quota"], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(stdout.read(), "");
+  assert.equal(
+    stderr.read(),
+    'Error: Unknown command "lukcy".\nDid you mean "lucky"?\n',
+  );
 });
 
 test("runCli lucky opens the newest matching thread deeplink", async () => {
@@ -101,6 +274,7 @@ test("runCli lucky opens the newest matching thread deeplink", async () => {
   const exitCode = await runCli(["lucky", "release", "--root-dir", fixturesDir], {
     stdout: stdout.stream as NodeJS.WriteStream,
     stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
     openUrl: async (url) => {
       opened.push(url);
     },
@@ -120,6 +294,7 @@ test("runCli lucky reports when nothing matches", async () => {
   const exitCode = await runCli(["lucky", "missing", "--root-dir", fixturesDir], {
     stdout: stdout.stream as NodeJS.WriteStream,
     stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
     openUrl: async (url) => {
       opened.push(url);
     },
@@ -131,20 +306,97 @@ test("runCli lucky reports when nothing matches", async () => {
   assert.match(stderr.read(), /No matches found/);
 });
 
-test("runCli can restrict search to active sessions", async () => {
-  let results: SearchResultsPage | null = null;
+test("runCli lucky does not open archived threads", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+  const opened: string[] = [];
 
-  const exitCode = await runCli(["quota", "--active", "--root-dir", fixturesDir], {
+  const exitCode = await runCli(["lucky", "quota", "--archived", "--root-dir", fixturesDir], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    openUrl: async (url) => {
+      opened.push(url);
+    },
+  });
+
+  assert.equal(exitCode, 1);
+  assert.deepEqual(opened, []);
+  assert.equal(stdout.read(), "");
+  assert.match(stderr.read(), /Archived thread cannot be reopened directly/);
+  assert.match(stderr.read(), /thread-archived-bbb/);
+});
+
+test("runCli passes a hit stream to the default TUI", async () => {
+  let streamed = 0;
+
+  const exitCode = await runCli(["quota", "--root-dir", fixturesDir], {
     isInteractiveTty: true,
+    now: fixedNow,
     runTui: async (options) => {
-      results = options.results;
+      for await (const hit of options.hitStream ?? []) {
+        streamed += 1;
+        assert.match(hit.sessionId, /thread-/);
+        break;
+      }
       return 0;
     },
   });
 
   assert.equal(exitCode, 0);
-  assert(results);
-  assert(results.hits.every((hit) => hit.source === "active"));
+  assert.equal(streamed, 1);
+});
+
+test("runCli can restrict search to active sessions", async () => {
+  const sources: string[] = [];
+
+  const exitCode = await runCli(["quota", "--active", "--root-dir", fixturesDir], {
+    isInteractiveTty: true,
+    now: fixedNow,
+    runTui: async (options) => {
+      for await (const hit of options.hitStream ?? []) {
+        sources.push(hit.source);
+      }
+      return 0;
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(new Set(sources), new Set(["active"]));
+});
+
+test("runCli can search all sources explicitly", async () => {
+  const sources: string[] = [];
+
+  const exitCode = await runCli(["quota", "--all", "--root-dir", fixturesDir], {
+    isInteractiveTty: true,
+    now: fixedNow,
+    runTui: async (options) => {
+      for await (const hit of options.hitStream ?? []) {
+        sources.push(hit.source);
+      }
+      return 0;
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(new Set(sources), new Set(["active", "archived"]));
+});
+
+test("runCli can filter by cwd", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+
+  const exitCode = await runCli(["quota", "--json", "-D", "/tmp/project-active-a", "--root-dir", fixturesDir], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    isInteractiveTty: false,
+    now: fixedNow,
+  });
+
+  assert.equal(exitCode, 0);
+  const parsed = JSON.parse(stdout.read()) as SearchResultsPage;
+  assert.equal(parsed.hits.length, 2);
+  assert(parsed.hits.every((hit) => hit.sessionId === "thread-active-aaa"));
 });
 
 test("runCli rejects pagination flags in interactive mode", async () => {
@@ -155,10 +407,26 @@ test("runCli rejects pagination flags in interactive mode", async () => {
     stdout: stdout.stream as NodeJS.WriteStream,
     stderr: stderr.stream as NodeJS.WriteStream,
     isInteractiveTty: true,
+    now: fixedNow,
   });
 
   assert.equal(exitCode, 1);
   assert.match(stderr.read(), /Interactive mode does not support/);
+});
+
+test("runCli rejects pagination flags in JSONL mode", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+
+  const exitCode = await runCli(["quota", "--jsonl", "-n", "2", "--root-dir", fixturesDir], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    isInteractiveTty: false,
+    now: fixedNow,
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(stderr.read(), /JSONL mode does not support/);
 });
 
 test("runCli rejects JSON flags in lucky mode", async () => {
@@ -168,8 +436,96 @@ test("runCli rejects JSON flags in lucky mode", async () => {
   const exitCode = await runCli(["lucky", "quota", "--json", "--root-dir", fixturesDir], {
     stdout: stdout.stream as NodeJS.WriteStream,
     stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
   });
 
   assert.equal(exitCode, 1);
   assert.match(stderr.read(), /Lucky mode does not support/);
+});
+
+test("runCli supports --all-time to search outside the default recent window", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+
+  const defaultExitCode = await runCli(["old quota", "--json", "--root-dir", fixturesDir], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    isInteractiveTty: false,
+    now: fixedNow,
+  });
+  const defaultParsed = JSON.parse(stdout.read()) as SearchResultsPage;
+
+  assert.equal(defaultExitCode, 0);
+  assert.equal(defaultParsed.hits.length, 0);
+
+  const allTimeStdout = createMemoryStream();
+  const allTimeStderr = createMemoryStream();
+  const allTimeExitCode = await runCli(["old quota", "--json", "--all-time", "--root-dir", fixturesDir], {
+    stdout: allTimeStdout.stream as NodeJS.WriteStream,
+    stderr: allTimeStderr.stream as NodeJS.WriteStream,
+    isInteractiveTty: false,
+    now: fixedNow,
+  });
+  const allTimeParsed = JSON.parse(allTimeStdout.read()) as SearchResultsPage;
+
+  assert.equal(allTimeExitCode, 0);
+  assert.equal(allTimeParsed.hits.length, 1);
+  assert.equal(allTimeParsed.hits[0]?.sessionId, "thread-old-ddd");
+  assert.equal(stderr.read(), "");
+  assert.equal(allTimeStderr.read(), "");
+});
+
+test("getOpenUrlCandidates prefers platform-appropriate openers", () => {
+  assert.deepEqual(getOpenUrlCandidates("darwin", {}), [["open"]]);
+  assert.deepEqual(getOpenUrlCandidates("linux", {}), [["xdg-open"]]);
+  assert.deepEqual(getOpenUrlCandidates("linux", { WSL_DISTRO_NAME: "Ubuntu" }), [["wslview"], ["xdg-open"]]);
+  assert.deepEqual(getOpenUrlCandidates("linux", { WSL_INTEROP: "/run/WSL" }), [["wslview"], ["xdg-open"]]);
+});
+
+test("runCli prints recorded cwd values for shell completion", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+
+  const exitCode = await runCli(["completion", "--cwds", "--root-dir", fixturesDir], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(stdout.read().trim().split("\n"), [
+    "/tmp/project-active-a",
+    "/tmp/project-active-c",
+    "/tmp/project-archived-b",
+    "/tmp/project-old-d",
+  ]);
+  assert.equal(stderr.read(), "");
+});
+
+test("runCli rejects invalid completion target", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+
+  const exitCode = await runCli(["completion", "fish"], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(stderr.read(), /codexs completion <zsh\|bash>/);
+});
+
+test("runCli rejects unexpected arguments for cwd completion", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+
+  const exitCode = await runCli(["completion", "--cwds", "extra"], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(stderr.read(), /codexs completion --cwds/);
 });

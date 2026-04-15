@@ -1,7 +1,7 @@
 {
   "name": "codex-search",
   "version": "0.1.0",
-  "description": "Browse and reopen local Codex session history from the command line.",
+  "description": "Search and reopen local Codex thread history from the command line.",
   "license": "MIT",
   "type": "module",
   "homepage": "https://github.com/Dikevin/codex-search#readme",
@@ -47,5 +47,8 @@
     "@types/node": "^24.5.2",
     "tsx": "^4.20.6",
     "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "tinypool": "^2.1.0"
   }
 }

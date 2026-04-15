@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      tinypool:
+        specifier: ^2.1.0
+        version: 2.1.0
     devDependencies:
       '@types/node':
         specifier: ^24.5.2
@@ -195,6 +199,10 @@ packages:
   resolve-pkg-maps@1.0.0:
     resolution: {integrity: sha512-seS2Tj26TBVOC2NIc2rOe2y2ZO7efxITtLZcGSOnHHNOQ7CkiUBfw0Iw2ck6xkIhPwLhKNLS8BO+hEpngQlqzw==}
 
+  tinypool@2.1.0:
+    resolution: {integrity: sha512-Pugqs6M0m7Lv1I7FtxN4aoyToKg1C4tu+/381vH35y8oENM/Ai7f7C4StcoK4/+BSw9ebcS8jRiVrORFKCALLw==}
+    engines: {node: ^20.0.0 || >=22.0.0}
+
   tsx@4.21.0:
     resolution: {integrity: sha512-5C1sg4USs1lfG0GFb2RLXsdpXqBSEhAaA/0kPL01wxzpMqLILNxIxIOKiILz+cdg/pLnOUxFYOR5yhHU666wbw==}
     engines: {node: '>=18.0.0'}
@@ -329,6 +337,8 @@ snapshots:
       resolve-pkg-maps: 1.0.0
 
   resolve-pkg-maps@1.0.0: {}
+
+  tinypool@2.1.0: {}
 
   tsx@4.21.0:
     dependencies:

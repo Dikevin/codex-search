@@ -1,7 +1,28 @@
 import { type SearchHit, type SearchResultsPage } from "../search/session-reader.js";
+import type { SearchProgress, SearchViewMode } from "../search/view-filter.js";
+
+export type JsonlSearchProgress = Omit<SearchProgress, "fileStates">;
 
 export function formatJsonResults(results: SearchResultsPage): string {
   return `${JSON.stringify(results, null, 2)}\n`;
+}
+
+export function formatJsonlEvent(
+  event:
+    | { type: "progress"; progress: JsonlSearchProgress }
+    | { type: "hit"; hit: SearchHit }
+    | { type: "summary"; hits: number; threads: number; view: SearchViewMode; progress: JsonlSearchProgress | null },
+): string {
+  return `${JSON.stringify(event)}\n`;
+}
+
+export function formatJsonlProgress(progress: SearchProgress): JsonlSearchProgress {
+  return {
+    totalFiles: progress.totalFiles,
+    readyFiles: progress.readyFiles,
+    scannedFiles: progress.scannedFiles,
+    activeFiles: progress.activeFiles,
+  };
 }
 
 export function formatHumanResults(results: SearchResultsPage): string {

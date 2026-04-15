@@ -1,0 +1,16 @@
+export const ANSI = {
+  clear: "\u001B[2J",
+  home: "\u001B[H",
+  altOn: "\u001B[?1049h",
+  altOff: "\u001B[?1049l",
+  hideCursor: "\u001B[?25l",
+  showCursor: "\u001B[?25h",
+  reset: "\u001B[0m",
+  bold: "\u001B[1m",
+  dim: "\u001B[2m",
+  underline: "\u001B[4m",
+  cyan: "\u001B[36m",
+  magenta: "\u001B[35m",
+  yellow: "\u001B[33m",
+  inverse: "\u001B[7m",
+} as const;

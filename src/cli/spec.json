@@ -1,17 +1,97 @@
 {
   "programName": "codexs",
-  "summary": "Search Codex session JSONL files.",
+  "summary": "Search local Codex thread history.",
+  "flags": [
+    { "flag": "--help", "description": "show help", "global": true, "aliases": ["-h"] },
+    { "flag": "--version", "description": "show version", "global": true, "aliases": ["-v"] },
+    { "flag": "--active", "description": "search active sessions only", "global": false },
+    { "flag": "--archived", "description": "search archived sessions only", "global": false },
+    { "flag": "--all", "description": "search active and archived sessions", "global": false },
+    { "flag": "--json", "description": "emit machine-readable JSON", "global": false },
+    { "flag": "--jsonl", "description": "emit streaming JSONL events", "global": false },
+    { "flag": "--limit", "description": "JSON page size", "global": false, "aliases": ["-n", "--page-size"] },
+    { "flag": "--page", "description": "JSON page number", "global": false, "aliases": ["-p"] },
+    { "flag": "--offset", "description": "JSON result offset", "global": false, "aliases": ["-o"] },
+    { "flag": "--with-total", "description": "include an exact total count in JSON output", "global": false },
+    { "flag": "--case-sensitive", "description": "match with exact case", "global": false, "aliases": ["-i"] },
+    { "flag": "--view", "description": "choose useful, ops, protocol, or all matches", "global": false },
+    { "flag": "--cwd", "description": "filter to threads under a cwd path", "global": false, "aliases": ["-D"] },
+    { "flag": "--recent", "description": "filter to a recent duration", "global": false },
+    { "flag": "--start", "description": "filter from a local start date", "global": false },
+    { "flag": "--end", "description": "filter through a local end date", "global": false },
+    { "flag": "--all-time", "description": "search without the default recent window", "global": false },
+    { "flag": "--root-dir", "description": "override the Codex home directory root", "global": false },
+    { "flag": "--durations", "description": "print common recent-duration values for shell completion", "global": false },
+    { "flag": "--cwds", "description": "print recorded cwd values for shell completion", "global": false }
+  ],
   "commands": [
     {
       "name": "search",
+      "flags": [
+        "--active",
+        "--archived",
+        "--all",
+        "--json",
+        "--jsonl",
+        "--limit",
+        "--page",
+        "--offset",
+        "--with-total",
+        "--case-sensitive",
+        "--view",
+        "--cwd",
+        "--recent",
+        "--start",
+        "--end",
+        "--all-time",
+        "--root-dir"
+      ],
       "helpUsages": [
-        "codexs <keyword> [--active|--archived] [--recent <duration>|--start <YYYY-MM-DD> --end <YYYY-MM-DD>] [--json [-p <page>] [-n <page-size>] [-o <offset>] [--with-total]] [-i]",
-        "codexs lucky <keyword> [--active|--archived] [--recent <duration>|--start <YYYY-MM-DD> --end <YYYY-MM-DD>] [-i]"
+        "codexs <keyword>",
+        "codexs <keyword> --json [--page <N>] [--limit <N>] [--offset <N>] [--with-total]",
+        "codexs <keyword> --jsonl",
+        "codexs -- <keyword-starting-with-dash>"
       ],
       "usageErrors": {
-        "default": "codexs <keyword> [--active|--archived] [--recent <duration>|--start <YYYY-MM-DD> --end <YYYY-MM-DD>] [--json [-p <page>] [-n <page-size>] [-o <offset>] [--with-total]] [-i]",
-        "lucky": "codexs lucky <keyword> [--active|--archived] [--recent <duration>|--start <YYYY-MM-DD> --end <YYYY-MM-DD>] [-i]"
+        "default": "codexs <keyword> [shared-search-flags] [--json|--jsonl]"
       }
+    },
+    {
+      "name": "lucky",
+      "flags": [
+        "--active",
+        "--archived",
+        "--all",
+        "--case-sensitive",
+        "--view",
+        "--cwd",
+        "--recent",
+        "--start",
+        "--end",
+        "--all-time",
+        "--root-dir"
+      ],
+      "helpUsages": [
+        "codexs lucky <keyword>"
+      ],
+      "usageErrors": {
+        "default": "codexs lucky <keyword> [shared-search-flags]"
+      }
+    },
+    {
+      "name": "completion",
+      "flags": ["--durations", "--cwds"],
+      "helpUsages": [
+        "codexs completion <zsh|bash>",
+        "codexs completion --durations",
+        "codexs completion --cwds"
+      ],
+      "usageErrors": {
+        "default": "codexs completion <zsh|bash>",
+        "durations": "codexs completion --durations",
+        "cwds": "codexs completion --cwds"
+      },
+      "completionTargets": ["zsh", "bash"]
     }
   ]
 }
