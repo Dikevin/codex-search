@@ -5,7 +5,11 @@ export interface ParsedArgs {
   query: string | null;
   json: boolean;
   caseSensitive: boolean;
-  limit: number;
+  page: number;
+  pageSize: number;
+  offset: number | null;
+  withTotal: boolean;
+  paginationExplicit: boolean;
   rootDir: string | null;
   help: boolean;
   version: boolean;
@@ -16,7 +20,12 @@ export function parseArgs(argv: string[]): ParsedArgs {
   let query: string | null = null;
   let json = false;
   let caseSensitive = false;
-  let limit = 20;
+  let page = 1;
+  let pageSize = 5;
+  let offset: number | null = null;
+  let withTotal = false;
+  let paginationExplicit = false;
+  let pageSizeSource: "--limit" | "--page-size" | null = null;
   let rootDir: string | null = null;
   let help = false;
   let version = false;
@@ -53,19 +62,56 @@ export function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
-    if (arg === "-n" || arg === "--limit") {
+    if (arg === "-n" || arg === "--limit" || arg === "--page-size") {
       const value = argv[index + 1];
       if (!value) {
         throw new Error(`Usage: ${getUsage()}`);
       }
 
-      const parsedLimit = Number.parseInt(value, 10);
-      if (!Number.isFinite(parsedLimit) || parsedLimit <= 0) {
-        throw new Error(`Invalid limit "${value}".`);
+      const parsedPageSize = parsePositiveInteger(value, arg);
+      const nextSource = arg === "--page-size" ? "--page-size" : "--limit";
+      if (pageSizeSource && pageSizeSource !== nextSource) {
+        throw new Error('"--limit" and "--page-size" cannot be combined.');
       }
 
-      limit = parsedLimit;
+      pageSize = parsedPageSize;
+      pageSizeSource = nextSource;
+      paginationExplicit = true;
       index += 1;
+      continue;
+    }
+
+    if (arg === "-p" || arg === "--page") {
+      const value = argv[index + 1];
+      if (!value) {
+        throw new Error(`Usage: ${getUsage()}`);
+      }
+
+      page = parsePositiveInteger(value, arg);
+      paginationExplicit = true;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "-o" || arg === "--offset") {
+      const value = argv[index + 1];
+      if (!value) {
+        throw new Error(`Usage: ${getUsage()}`);
+      }
+
+      if (offset !== null) {
+        throw new Error('Provide "--offset" only once.');
+      }
+
+      offset = parseNonNegativeInteger(value, arg);
+      paginationExplicit = true;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--with-total") {
+      withTotal = true;
+      paginationExplicit = true;
       continue;
     }
 
@@ -91,14 +137,40 @@ export function parseArgs(argv: string[]): ParsedArgs {
     query = arg;
   }
 
+  if (offset !== null && page !== 1) {
+    throw new Error('"--page" and "--offset" cannot be combined.');
+  }
+
   return {
     mode,
     query,
     json,
     caseSensitive,
-    limit,
+    page,
+    pageSize,
+    offset,
+    withTotal,
+    paginationExplicit,
     rootDir,
     help,
     version,
   };
+}
+
+function parsePositiveInteger(value: string, option: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Invalid value "${value}" for "${option}".`);
+  }
+
+  return parsed;
+}
+
+function parseNonNegativeInteger(value: string, option: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`Invalid value "${value}" for "${option}".`);
+  }
+
+  return parsed;
 }

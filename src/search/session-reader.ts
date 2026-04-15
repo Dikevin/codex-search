@@ -4,11 +4,21 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import readline from "node:readline";
 
+export type SearchSource = "active" | "archived";
+
 export interface SearchArchivedSessionsOptions {
   query: string;
-  rootDir?: string;
+  codexHomeDir?: string;
+  sources?: SearchSource[];
   caseSensitive?: boolean;
-  limit?: number;
+  page?: number;
+  pageSize?: number;
+  offset?: number;
+  withTotal?: boolean;
+  recent?: string;
+  start?: string;
+  end?: string;
+  now?: Date;
 }
 
 export interface SearchHit {
@@ -16,9 +26,31 @@ export interface SearchHit {
   timestamp: string;
   cwd: string | null;
   snippet: string;
+  source: SearchSource;
   filePath: string;
   resumeCommand: string;
   deepLink: string;
+}
+
+export interface SearchSessionGroup {
+  sessionId: string;
+  timestamp: string;
+  cwd: string | null;
+  source: SearchSource;
+  previewSnippet: string;
+  snippets: string[];
+  matchCount: number;
+  resumeCommand: string;
+  deepLink: string;
+}
+
+export interface SearchResultsPage {
+  hits: SearchHit[];
+  page: number;
+  pageSize: number;
+  offset: number;
+  hasMore: boolean;
+  total?: number;
 }
 
 interface SessionMeta {
@@ -27,44 +59,113 @@ interface SessionMeta {
   cwd: string | null;
 }
 
-const DEFAULT_ROOT_DIR = join(homedir(), ".codex", "archived_sessions");
+interface TimeRange {
+  startMs: number | null;
+  endMs: number | null;
+}
+
+const DEFAULT_CODEX_HOME_DIR = join(homedir(), ".codex");
 const MAX_SNIPPET_LENGTH = 160;
 
 export async function searchArchivedSessions(
   options: SearchArchivedSessionsOptions,
-): Promise<SearchHit[]> {
-  const rootDir = options.rootDir ?? DEFAULT_ROOT_DIR;
+): Promise<SearchResultsPage> {
+  const codexHomeDir = options.codexHomeDir ?? DEFAULT_CODEX_HOME_DIR;
+  const sources = options.sources ?? ["active", "archived"];
   const caseSensitive = options.caseSensitive ?? false;
-  const limit = options.limit ?? 20;
-  const files = await listJsonlFiles(rootDir);
+  const pageSize = options.pageSize ?? 5;
+  const page = options.page ?? 1;
+  const offset = options.offset ?? ((page - 1) * pageSize);
+  const timeRange = resolveTimeRange(options);
   const results: SearchHit[] = [];
 
-  for (const filePath of files) {
-    const fileResults = await searchFile(filePath, options.query, {
-      caseSensitive,
-      remaining: limit,
-    });
-    results.push(...fileResults);
+  for (const source of sources) {
+    const rootDir = getSourceRootDir(codexHomeDir, source);
+    const files = await listJsonlFiles(rootDir);
+
+    for (const filePath of files) {
+      const fileResults = await searchFile(filePath, options.query, {
+        caseSensitive,
+        source,
+        timeRange,
+      });
+      results.push(...fileResults);
+    }
   }
 
-  return results
-    .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
-    .slice(0, limit);
+  const sortedResults = results
+    .sort((left, right) => right.timestamp.localeCompare(left.timestamp));
+  const end = offset + pageSize;
+
+  return {
+    hits: sortedResults.slice(offset, end),
+    page,
+    pageSize,
+    offset,
+    hasMore: end < sortedResults.length,
+    total: options.withTotal ? sortedResults.length : undefined,
+  };
+}
+
+export function aggregateSearchHitsBySession(hits: SearchHit[]): SearchSessionGroup[] {
+  const groups = new Map<string, SearchSessionGroup>();
+
+  for (const hit of hits) {
+    const existing = groups.get(hit.sessionId);
+    if (!existing) {
+      groups.set(hit.sessionId, {
+        sessionId: hit.sessionId,
+        timestamp: hit.timestamp,
+        cwd: hit.cwd,
+        source: hit.source,
+        previewSnippet: hit.snippet,
+        snippets: [hit.snippet],
+        matchCount: 1,
+        resumeCommand: hit.resumeCommand,
+        deepLink: hit.deepLink,
+      });
+      continue;
+    }
+
+    existing.matchCount += 1;
+    if (!existing.snippets.includes(hit.snippet)) {
+      existing.snippets.push(hit.snippet);
+    }
+  }
+
+  return [...groups.values()].sort((left, right) => right.timestamp.localeCompare(left.timestamp));
 }
 
 async function listJsonlFiles(rootDir: string): Promise<string[]> {
+  const results: string[] = [];
+  await walkJsonlFiles(rootDir, results);
+  return results.sort();
+}
+
+async function walkJsonlFiles(rootDir: string, output: string[]): Promise<void> {
   const entries = await readdir(rootDir, { withFileTypes: true });
 
-  return entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
-    .map((entry) => join(rootDir, entry.name))
-    .sort();
+  await Promise.all(entries.map(async (entry) => {
+    const nextPath = join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      await walkJsonlFiles(nextPath, output);
+      return;
+    }
+
+    if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+      output.push(nextPath);
+    }
+  }));
 }
 
 async function searchFile(
   filePath: string,
   query: string,
-  options: { caseSensitive: boolean; remaining: number },
+  options: {
+    caseSensitive: boolean;
+    source: SearchSource;
+    timeRange: TimeRange | null;
+  },
 ): Promise<SearchHit[]> {
   const results: SearchHit[] = [];
   const input = createReadStream(filePath, { encoding: "utf8" });
@@ -77,12 +178,12 @@ async function searchFile(
   const normalizedQuery = options.caseSensitive ? query : query.toLowerCase();
 
   for await (const line of lines) {
-    if (results.length >= options.remaining) {
-      break;
-    }
-
     if (!sessionMeta) {
       sessionMeta = tryReadSessionMeta(line);
+    }
+
+    if (sessionMeta && !matchesTimeRange(sessionMeta.timestamp, options.timeRange)) {
+      continue;
     }
 
     const lineForMatch = options.caseSensitive ? line : line.toLowerCase();
@@ -100,6 +201,7 @@ async function searchFile(
       timestamp: sessionMeta.timestamp,
       cwd: sessionMeta.cwd,
       snippet,
+      source: options.source,
       filePath,
       resumeCommand: `codex resume ${sessionMeta.sessionId}`,
       deepLink: `codex://threads/${sessionMeta.sessionId}`,
@@ -184,4 +286,89 @@ function trimAroundMatch(text: string, startIndex: number, queryLength: number):
   const suffix = end < text.length ? "..." : "";
 
   return `${prefix}${text.slice(start, end).trim()}${suffix}`;
+}
+
+function getSourceRootDir(codexHomeDir: string, source: SearchSource): string {
+  return source === "active"
+    ? join(codexHomeDir, "sessions")
+    : join(codexHomeDir, "archived_sessions");
+}
+
+function resolveTimeRange(options: SearchArchivedSessionsOptions): TimeRange | null {
+  if (options.recent) {
+    const durationMs = parseRecentDuration(options.recent);
+    const nowMs = (options.now ?? new Date()).getTime();
+    return {
+      startMs: nowMs - durationMs,
+      endMs: nowMs,
+    };
+  }
+
+  if (!options.start && !options.end) {
+    return null;
+  }
+
+  return {
+    startMs: options.start ? parseDateBoundary(options.start, "start") : null,
+    endMs: options.end ? parseDateBoundary(options.end, "end") : null,
+  };
+}
+
+function parseRecentDuration(value: string): number {
+  const match = /^(?<amount>[1-9][0-9]*)(?<unit>m|h|d|w)$/.exec(value);
+  if (!match?.groups) {
+    throw new Error(`Invalid recent duration "${value}". Use forms like 30m, 12h, 7d, or 2w.`);
+  }
+
+  const groups = match.groups as Record<"amount" | "unit", string>;
+  const amount = Number.parseInt(groups.amount, 10);
+  const unit = groups.unit;
+  const unitMs = unit === "m"
+    ? 60_000
+    : unit === "h"
+      ? 3_600_000
+      : unit === "d"
+        ? 86_400_000
+        : 604_800_000;
+
+  return amount * unitMs;
+}
+
+function parseDateBoundary(value: string, edge: "start" | "end"): number {
+  const match = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})$/.exec(value);
+  if (!match?.groups) {
+    throw new Error(`Invalid date "${value}". Use YYYY-MM-DD.`);
+  }
+
+  const groups = match.groups as Record<"year" | "month" | "day", string>;
+  const year = Number.parseInt(groups.year, 10);
+  const monthIndex = Number.parseInt(groups.month, 10) - 1;
+  const day = Number.parseInt(groups.day, 10);
+
+  if (edge === "start") {
+    return new Date(year, monthIndex, day, 0, 0, 0, 0).getTime();
+  }
+
+  return new Date(year, monthIndex, day, 23, 59, 59, 999).getTime();
+}
+
+function matchesTimeRange(timestamp: string, timeRange: TimeRange | null): boolean {
+  if (!timeRange) {
+    return true;
+  }
+
+  const tsMs = Date.parse(timestamp);
+  if (!Number.isFinite(tsMs)) {
+    return false;
+  }
+
+  if (timeRange.startMs !== null && tsMs < timeRange.startMs) {
+    return false;
+  }
+
+  if (timeRange.endMs !== null && tsMs > timeRange.endMs) {
+    return false;
+  }
+
+  return true;
 }

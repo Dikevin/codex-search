@@ -1,7 +1,7 @@
 {
   "name": "codex-search",
   "version": "0.1.0",
-  "description": "Search Codex session JSONL files from the command line.",
+  "description": "Browse and reopen local Codex session history from the command line.",
   "license": "MIT",
   "type": "module",
   "homepage": "https://github.com/Dikevin/codex-search#readme",
@@ -16,6 +16,7 @@
     "codex",
     "search",
     "cli",
+    "tui",
     "jsonl",
     "chat-history"
   ],
