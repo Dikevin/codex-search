@@ -46,12 +46,12 @@
 ## TUI keys
 
 - Home screen: type a keyword directly
-- `Ctrl+o` lucky-open the newest matching active thread for the current keyword; when preview results are visible it opens the first preview hit immediately
+- `Ctrl+o` from the result list, lucky-open the newest matching active thread for the current keyword
 - `s` reopen the global search prompt with the current keyword prefilled
 - `f` open the bottom overlay filter picker from the thread list and apply source/range/view/case changes globally for later searches in the same TUI session
 - `Ctrl+f` open the bottom overlay filter picker while the search prompt is active
 - `Tab` accept the selected `recent` or `project` suggestion while the bottom search dock is active
-- `1-5` open the numbered preview result directly when preview results are visible
+- `1-5` when preview results are visible in the search dock, submit into the formal result list and preselect the numbered preview thread
 - `Backspace/Delete` remove the selected `recent` suggestion while the suggestion list is focused, or edit the query at the cursor when the prompt itself is focused
 - Search prompt editing also supports `Ctrl+a`, `Ctrl+e`, `Ctrl+u`, `Ctrl+k`, `Ctrl+w`, `Left/Right`, and `Home/End`; `Option+Left/Right` works on terminals that emit Meta word-motion keys
 - `Enter` open selected active thread
@@ -67,8 +67,8 @@
 - `g` / `G` jump to the first or last thread
 - `/` search inside the expanded transcript preview
 - `n` / `N` jump to the next or previous transcript-search match
-- `q` quit from the thread list or expanded detail view
-- `Esc` cancel the active prompt or filter picker, return the list to the home screen, and quit from the home screen
+- `q` quit from the list, detail view, filter picker, or idle home screen; while a text prompt is active it still inserts `q`
+- `Esc` back/cancel only: close prompts and pickers, move detail focus back to the list, and return the result list to the home screen
 
 ## Result actions
 

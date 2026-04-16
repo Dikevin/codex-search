@@ -269,9 +269,9 @@ test("renderSearchTuiScreen shows a centered home search view before the first q
   assert.match(screenRaw, /\u001b\[1m\u001b\[4mqu\u001b\[0m/i);
   assert.match(screen, /search>\s*qu/i);
   assert.match(screen, /Enter search/i);
-  assert.match(screen, /1-5 open/i);
+  assert.match(screen, /1-5 pick/i);
   assert.match(screen, /\^F filters/i);
-  assert.match(screen, /Esc quit/i);
+  assert.match(screen, /Esc cancel/i);
 });
 
 test("renderSearchTuiScreen preview prefers a keyword-matching snippet over a generic summary", () => {
@@ -1251,6 +1251,7 @@ test("runSearchTui returns to the home screen from list results with escape", as
   const results = createResults(2);
   const stdin = createTuiStdin();
   const stdout = createTuiStdout(100, 20);
+  let settled = false;
 
   const run = runSearchTui({
     query: "quota",
@@ -1258,22 +1259,29 @@ test("runSearchTui returns to the home screen from list results with escape", as
     stdin,
     stdout: stdout.stream,
   });
+  void run.then(() => {
+    settled = true;
+  });
 
   await new Promise((resolve) => setTimeout(resolve, 10));
   stdin.emit("keypress", "", { name: "escape" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(settled, false);
   await waitForCondition(() => stdin.listenerCount("keypress") > 0);
-  stdin.emit("keypress", "", { name: "escape" });
+  stdin.emit("keypress", "q", { name: "q" });
 
   assert.equal(await run, 0);
   const output = stripAnsi(stdout.read());
   assert.match(output, /search local codex threads/i);
-  assert.match(output, /search>/);
+  assert.match(output, /q quit/i);
 });
 
-test("runSearchTui opens preview results directly with number shortcuts from the search dock", async () => {
+test("runSearchTui moves a numbered preview result into the formal list before opening", async () => {
   const stdin = createTuiStdin();
   const stdout = createTuiStdout(110, 24);
   const opened: string[] = [];
+  const started: string[] = [];
+  let settled = false;
 
   const run = runSearchTui({
     query: "",
@@ -1291,9 +1299,26 @@ test("runSearchTui opens preview results directly with number shortcuts from the
       projects: [{ kind: "project", value: "codex-search" }],
     }),
     onPreviewSearch: async () => [createPreviewSession({ matchCount: 1 })],
+    onStartSearch: async ({ query, seedSessions }) => {
+      started.push(query);
+      return {
+        query,
+        seedSessions,
+        results: {
+          hits: [],
+          page: 1,
+          pageSize: 5,
+          offset: 0,
+          hasMore: true,
+        },
+      };
+    },
     openHit: async (hit) => {
       opened.push(hit.deepLink);
     },
+  });
+  void run.then(() => {
+    settled = true;
   });
 
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1303,9 +1328,48 @@ test("runSearchTui opens preview results directly with number shortcuts from the
   }
   await new Promise((resolve) => setTimeout(resolve, 260));
   stdin.emit("keypress", "1", { name: "1" });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  assert.equal(settled, false);
+  assert.deepEqual(started, ["qu"]);
+  assert.deepEqual(opened, []);
+  assert.match(stripAnsi(stdout.read()), /quota exceeded on desktop launch/i);
+  stdin.emit("keypress", "\r", { name: "return" });
 
   assert.equal(await run, 0);
   assert.deepEqual(opened, ["codex://threads/thread-preview-1"]);
+});
+
+test("runSearchTui requires home idle before q quits", async () => {
+  const stdin = createTuiStdin();
+  const stdout = createTuiStdout(100, 20);
+  let settled = false;
+
+  const run = runSearchTui({
+    query: "",
+    results: {
+      hits: [],
+      page: 1,
+      pageSize: 5,
+      offset: 0,
+      hasMore: false,
+    },
+    stdin,
+    stdout: stdout.stream,
+  });
+  void run.then(() => {
+    settled = true;
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stdin.emit("keypress", "", { name: "escape" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(settled, false);
+  assert.match(stripAnsi(stdout.read()), /q quit/i);
+
+  stdin.emit("keypress", "q", { name: "q" });
+  assert.equal(await run, 0);
 });
 
 test("runSearchTui seeds preview results into the formal list before streamed hits arrive", async () => {

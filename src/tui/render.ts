@@ -716,10 +716,10 @@ function renderHintBar(
     const searchModeHint = searchHint === "global-search"
       ? [
         formatKey("Enter"), " search",
-        searchAssist?.previews.length ? `  ${formatKey("1-5")} open` : `  ${formatKey("^O")} lucky`,
+        searchAssist?.previews.length ? `  ${formatKey("1-5")} pick` : "",
         "  ", formatKey("Tab"), " accept",
         "  ", formatKey("^F"), " filters",
-        "  ", formatKey("Esc"), home?.active ? " quit" : " cancel",
+        "  ", formatKey("Esc"), " cancel",
       ].join("")
       : [
         formatKey("Enter"), " find",
@@ -729,22 +729,33 @@ function renderHintBar(
     return truncate(searchModeHint, width);
   }
 
+  if (home?.active) {
+    return truncate([
+      formatKey("Enter"), " search",
+      "  ", formatKey("f"), " filters",
+      "  ", formatKey("q"), " quit",
+    ].join(""), width);
+  }
+
   const compactHint = expanded
     ? state.focus === "detail"
       ? [
         formatKey("Tab"), " list",
         "  ", formatKey("Space"), " close",
+        "  ", formatKey("Esc"), " list",
         "  ", formatKey("q"), " quit",
       ].join("")
       : [
         formatKey("Enter"), " open",
         "  ", formatKey("Space"), " close",
         "  ", formatKey("Tab"), " detail",
+        "  ", formatKey("Esc"), " home",
         "  ", formatKey("q"), " quit",
       ].join("")
     : [
       formatKey("Enter"), " open",
       "  ", formatKey("Space"), " detail",
+      "  ", formatKey("Esc"), " home",
       "  ", formatKey("q"), " quit",
     ].join("");
   const priorityHint = expanded
@@ -753,8 +764,9 @@ function renderHintBar(
         formatKey("Tab"), " list",
         "  ", formatKey("Space"), " close",
         "  ", formatKey("/"), " search",
-        "  ", formatKey("q"), " quit",
+        "  ", formatKey("Esc"), " list",
         "  ", formatKey("j/k"), " preview",
+        "  ", formatKey("q"), " quit",
       ].join("")
       : [
         formatKey("Enter"), " open",
@@ -762,6 +774,7 @@ function renderHintBar(
         "  ", formatKey("r"), " resume",
         "  ", formatKey("Space"), " close",
         "  ", formatKey("Tab"), " detail",
+        "  ", formatKey("Esc"), " home",
         "  ", formatKey("q"), " quit",
       ].join("")
     : [
@@ -772,6 +785,7 @@ function renderHintBar(
       "  ", formatKey("Space"), " detail",
       "  ", formatKey("s"), " search",
       "  ", formatKey("f"), " filters",
+      "  ", formatKey("Esc"), " home",
       "  ", formatKey("q"), " quit",
     ].join("");
   const fullHint = expanded
@@ -833,6 +847,10 @@ function formatStatusLine(
 
   if (options.filterPicker?.active) {
     return `${ANSI.dim}${truncate("Filters", width)}${ANSI.reset}`;
+  }
+
+  if (options.home?.active && sessions.length === 0) {
+    return `${ANSI.dim}${truncate("Ready", width)}${ANSI.reset}`;
   }
 
   if (options.searchAssist?.active) {

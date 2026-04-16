@@ -112,7 +112,7 @@ Each line is an `EventLogRecord`.
 | `session_start` | `info` | `query`, `width`, `height`, `sourceMode`, `view`, `caseSensitive`, `range` |
 | `session_end` | `info` | `exitCode`, `durationMs` |
 | `search_run` | `info` or `error` | `status`, `exitCode`, `results`, `progress`, `flags`, optional `error` |
-| `preview_open` | `info` | `sessionId`, `source`, `deepLink` |
+| `preview_open` | `info` | Reserved for direct preview-open flows; not emitted by the current preview-to-list handoff design |
 | `desktop_open` | `info` | `sessionId`, `source`, `deepLink` |
 | `lucky_open` | `info` | `sessionId`, `source`, `deepLink` |
 | `resume` | `info` | `targetSessionId`, `exitCode` |
@@ -129,7 +129,7 @@ Each line is an `EventLogRecord`.
 ### Rules
 
 - Preview searches themselves do not write `events.jsonl` search-run entries.
-- Explicit preview opens do write `preview_open`.
+- The current TUI preview flow does not reopen threads directly, so it does not emit `preview_open`.
 - Recoverable per-file read failures should be logged as `warn`, not as fatal search failures.
 - Repeated warnings for the same file/code pair should be deduplicated per search run.
 

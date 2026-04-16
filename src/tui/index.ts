@@ -460,7 +460,10 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
     await cleanupTerminal(stdin, stdout, previousRawMode);
   };
 
-  const bindSearchSession = (session: TuiSearchSession) => {
+  const bindSearchSession = (
+    session: TuiSearchSession,
+    selectedSessionId: string | null = null,
+  ) => {
     detachSearchNotify(currentSearch);
     currentSearch = createActiveSearchSession(session);
     currentQuery = currentSearch.query;
@@ -503,11 +506,27 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
       model.dirty = true;
       scheduleSearchRender();
     });
+
+    if (selectedSessionId) {
+      const seededSessions = getSessions();
+      const selectedIndex = seededSessions.findIndex((item) => item.sessionId === selectedSessionId);
+      if (selectedIndex >= 0) {
+        const viewport = getPanelContentSize(stdout.columns ?? 80, stdout.rows ?? 24);
+        const visibleSessions = getVisibleSessionCapacityForLayout(
+          seededSessions,
+          state,
+          viewport.width,
+          viewport.height,
+        );
+        state = clearStatus(moveTo(state, selectedIndex, visibleSessions));
+      }
+    }
   };
 
   const startSearch = async (
     query: string,
     reason: "submit" | "suggestion" | "filters" = "submit",
+    selectedSessionId: string | null = null,
   ) => {
     const nextQuery = query.trim();
     if (!options.onStartSearch) {
@@ -536,7 +555,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
       reason,
       seedSessions,
     });
-    bindSearchSession(session);
+    bindSearchSession(session, selectedSessionId);
   };
 
   const runLucky = async (query: string): Promise<number | null> => {
@@ -549,15 +568,6 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
     if (!nextQuery) {
       state = withStatus(state, "Enter a keyword first.");
       return null;
-    }
-
-    if (globalSearch.active && searchAssist.previews.length > 0) {
-      const preview = searchAssist.previews[0];
-      if (preview) {
-        await finish();
-        await openHit(searchSessionToHit(preview), "preview");
-        return 0;
-      }
     }
 
     const result = await options.onLuckySearch({
@@ -653,6 +663,20 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
       cursor: clamp(next.cursor, 0, next.query.length),
     };
   };
+  const enterHomeIdle = () => {
+    cancelPreviewSearch();
+    globalSearch = {
+      active: false,
+      home: true,
+      query: "",
+      cursor: 0,
+    };
+    searchAssist = {
+      ...createSearchAssistState(options.historyEnabled ?? true),
+      active: false,
+    };
+    state = clearStatus(state);
+  };
   const returnToHome = async () => {
     await disposeSearchSession(currentSearch);
     searchGeneration += 1;
@@ -672,12 +696,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
       cursor: 0,
       lastQuery: detailSearch.lastQuery,
     };
-    globalSearch = {
-      active: true,
-      home: true,
-      query: "",
-      cursor: 0,
-    };
+    enterHomeIdle();
     filterPicker = {
       active: false,
       selected: 0,
@@ -687,7 +706,6 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
       valueSelected: 0,
     };
     pendingSearch = null;
-    refreshSearchAssist();
   };
 
   let pendingInput = waitForTuiEvent(stdin, stdout).then((event) => ({
@@ -1036,35 +1054,23 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
           return 0;
         }
 
-        if (key.ctrl && key.name === "o") {
-          const exitCode = await runLucky(globalSearch.query);
-          if (exitCode !== null) {
-            return exitCode;
-          }
-
-          armInput();
-          clearScheduledRender();
-          render();
-          continue;
-        }
-
         if (key.name === "escape") {
           if (globalSearch.home) {
-            return 0;
+            enterHomeIdle();
+          } else {
+            cancelPreviewSearch();
+            globalSearch = {
+              active: false,
+              home: false,
+              query: currentQuery,
+              cursor: currentQuery.length,
+            };
+            searchAssist = {
+              ...createSearchAssistState(options.historyEnabled ?? true),
+              active: false,
+            };
+            state = clearStatus(state);
           }
-
-          cancelPreviewSearch();
-          globalSearch = {
-            active: false,
-            home: false,
-            query: currentQuery,
-            cursor: currentQuery.length,
-          };
-          searchAssist = {
-            ...createSearchAssistState(options.historyEnabled ?? true),
-            active: false,
-          };
-          state = clearStatus(state);
           armInput();
           clearScheduledRender();
           render();
@@ -1223,20 +1229,18 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
         if (/^[1-5]$/.test(inputEvent.text)) {
           const preview = searchAssist.previews[Number(inputEvent.text) - 1];
           if (preview) {
-            await finish();
-            await openHit(searchSessionToHit(preview), "preview");
-            return 0;
+            await startSearch(globalSearch.query, "submit", preview.sessionId);
+            armInput();
+            clearScheduledRender();
+            render();
+            continue;
           }
         }
 
         if (key.name === "return") {
           if (selectedAssist?.kind === "preview" && selectedAssist.preview) {
-            await finish();
-            await openHit(searchSessionToHit(selectedAssist.preview), "preview");
-            return 0;
-          }
-
-          if (selectedAssist && selectedAssist.kind !== "preview") {
+            await startSearch(globalSearch.query, "submit", selectedAssist.preview.sessionId);
+          } else if (selectedAssist && selectedAssist.kind !== "preview") {
             await startSearch(selectedAssist.value, "suggestion");
           } else {
             await startSearch(globalSearch.query, "submit");
@@ -1269,11 +1273,63 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
 
       if (sessions.length === 0) {
         if (globalSearch.home) {
+          if (key.ctrl && key.name === "c") {
+            return 0;
+          }
+
+          if (key.name === "q") {
+            return 0;
+          }
+
+          if (key.name === "return" || key.name === "s") {
+            globalSearch = {
+              active: true,
+              home: true,
+              query: "",
+              cursor: 0,
+            };
+            searchAssist = {
+              ...searchAssist,
+              selection: "input",
+              selectedIndex: 0,
+            };
+            refreshSearchAssist();
+            armInput();
+            clearScheduledRender();
+            render();
+            continue;
+          }
+
+          if (key.name === "f") {
+            openFilterPicker();
+            armInput();
+            clearScheduledRender();
+            render();
+            continue;
+          }
+
+          if (isPrintableInput(inputEvent.text, key)) {
+            globalSearch = {
+              active: true,
+              home: true,
+              query: "",
+              cursor: 0,
+            };
+            updateGlobalSearchInput(insertText("", 0, inputEvent.text));
+            armInput();
+            clearScheduledRender();
+            render();
+            continue;
+          }
+
           armInput();
           continue;
         }
 
-        if (key.name === "q" || key.name === "return" || (key.ctrl && key.name === "c")) {
+        if (key.ctrl && key.name === "c") {
+          return 0;
+        }
+        if (key.name === "q") {
           return 0;
         }
         if (key.name === "escape") {
@@ -1744,27 +1800,6 @@ function findFirstAcceptableAssistItem(
   return items.find((item) => item.kind !== "preview") ?? null;
 }
 
-function searchSessionToHit(session: SearchSessionGroup): SearchHit {
-  return {
-    sessionId: session.sessionId,
-    timestamp: session.timestamp,
-    cwd: session.cwd,
-    title: session.title,
-    snippet: session.previewSnippet,
-    preview: session.matchPreviews[0] ?? {
-      kind: "text",
-      label: "Text",
-      text: session.previewSnippet,
-      timestamp: session.timestamp,
-      secondaryText: null,
-    },
-    source: session.source,
-    filePath: "",
-    resumeCommand: session.resumeCommand,
-    deepLink: session.deepLink,
-  };
-}
-
 function clearStatus(state: TuiState): TuiState {
   return {
     ...state,
@@ -1976,7 +2011,28 @@ function getSelectedHit(
   }
 
   return hits.find((hit) => hit.sessionId === sessionId)
-    ?? (sessions[selectedIndex] ? searchSessionToHit(sessions[selectedIndex]!) : null);
+    ?? (sessions[selectedIndex] ? sessionGroupToHit(sessions[selectedIndex]!) : null);
+}
+
+function sessionGroupToHit(session: SearchSessionGroup): SearchHit {
+  return {
+    sessionId: session.sessionId,
+    timestamp: session.timestamp,
+    cwd: session.cwd,
+    title: session.title,
+    snippet: session.previewSnippet,
+    preview: session.matchPreviews[0] ?? {
+      kind: "text",
+      label: "Text",
+      text: session.previewSnippet,
+      timestamp: session.timestamp,
+      secondaryText: null,
+    },
+    source: session.source,
+    filePath: "",
+    resumeCommand: session.resumeCommand,
+    deepLink: session.deepLink,
+  };
 }
 
 function findMatchingPreviewIndex(

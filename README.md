@@ -139,13 +139,13 @@ Key bindings:
 
 - Home screen: type a keyword directly
 - `Enter`: run a search from the home screen or the global search prompt; otherwise open the selected active thread in Codex Desktop
-- `Ctrl+o`: run a lucky search for the current keyword; when preview results are visible, it opens the first preview hit immediately
+- `Ctrl+o`: from the result list, run a lucky search for the current keyword and open the newest matching active thread immediately
 - `f`: open the global filter picker from the thread list; changes become the new default state for later searches in the same TUI session
 - `Ctrl+f`: open the global filter picker while the home screen or global search prompt is active
 - `s`: reopen the global search prompt with the current keyword prefilled
 - `Tab`: while searching, accept the selected `recent` or `project` suggestion into the input; otherwise switch focus between the thread list and the expanded transcript preview
 - `Up/Down`: while searching, move between `preview`, `recent`, and `project` suggestions
-- `1-5`: open the numbered preview result directly when preview results are visible
+- `1-5`: when preview results are visible in the search dock, submit into the formal result list and preselect the numbered preview thread
 - `Backspace/Delete`: remove the selected `recent` entry while the suggestion list is focused; otherwise edit the query at the cursor
 - While the search prompt is active, `Ctrl+a`, `Ctrl+e`, `Ctrl+u`, `Ctrl+k`, `Ctrl+w`, `Left/Right`, and `Home/End` edit the current line; `Option+Left/Right` is supported on terminals that send Meta word-motion keys
 - `o`: open the selected active thread in Codex Desktop and keep the picker open
@@ -160,8 +160,8 @@ Key bindings:
 - In transcript focus, `Ctrl+d` / `Ctrl+u`, `PageDown` / `PageUp`, and `g` / `G` page inside the preview instead of moving the thread list
 - `/`: search within the expanded transcript preview
 - `n` / `N`: jump to the next or previous transcript-search match
-- `q`: quit from the thread list or expanded detail view
-- `Esc`: cancel the active search prompt or filter picker, return from the thread list to the home screen, and quit from the home screen
+- `q`: quit from the list, detail view, filter picker, or the idle home screen. While a text prompt is active, typing `q` still inserts `q`.
+- `Esc`: back/cancel only. It closes prompts and pickers, moves detail focus back to the list, and returns the result list to the home screen. From the home prompt it returns to an idle home screen instead of quitting.
 
 The TUI groups repeated keyword hits by thread, not by `cwd`. Results render inside a centered panel so the first data row does not sit on the terminal's top edge. The list uses fixed-width columns with an English header row, prefers the Codex thread title when available, truncates by terminal display width so long CJK titles do not wrap and push earlier rows off screen, and inserts lightweight time bucket separators such as `[<1d]`, `[<3d]`, and `[<1w]` between age groups. With no keyword yet, the picker shows a centered home screen in the upper body and keeps the active search input in a bottom dock above the status bar. That same bottom dock is reused for `s` restart-search prompts, and it can show `preview`, `recent`, and `project` sections above it. Preview rows summarize threads rather than raw matches: each preview shows the thread title, cumulative match count, and a representative keyword-matching line when possible, and both the title and preview line use the same keyword highlighting as the main list so you can open it immediately or submit into a fuller search. Pressing `f` from the list or `Ctrl+f` from the active prompt opens a bottom overlay filter picker with a row selector and value selector; changes update the session-global source/time/view/case filters, and a close with no effective change does not retrigger search. Expanding a thread shows a compact metadata header plus a typed transcript preview that favors a representative summary in the list while keeping detail hits in reverse-chronological reading order. Detail headers prioritize thread-level context such as match count, message count, session id, reopenability state, and reopen actions; when the panel is tall enough, they also include `cwd`. Wide terminals use a side-by-side list/detail layout that gives the transcript pane more width; narrow terminals stack details below the list, clamp preview counts, and split bottom query/filter context across two lines when needed. Terminal resize events trigger a redraw.
 
@@ -253,11 +253,11 @@ JSONL mode is not paginated and does not support `--page`, `--page-size`, `--lim
 `events.jsonl` records:
 
 - session lifecycle such as `session_start` and `session_end`
-- explicit actions such as `preview_open`, `desktop_open`, `resume`, `lucky_open`, and history management commands
+- explicit actions such as `desktop_open`, `resume`, `lucky_open`, and history management commands
 - warning/error events such as file read failures and thread-title lookup failures
 - `search_run` summaries for full searches, including performance and result counts
 
-Preview searches do not write search history. Directly opening a preview result writes an event but does not create a `recent` query entry.
+Preview searches do not write search history. Preview results feed the formal list instead of reopening a thread directly, so they do not create action events until you explicitly open or resume a result.
 
 Use `codexs history`, `codexs history clear`, `codexs history enable`, and `codexs history disable` to inspect or manage explicit search history. Disabling history hides `recent` suggestions and stops new writes to `searches.jsonl`, while event logging continues.
 
