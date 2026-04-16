@@ -195,6 +195,38 @@
 - 当空间不足时，应优先保留列表和底部操作 dock，而不是强留完整详情区。
 - “列表优先 + 状态清楚 + 动作清楚” 通常比“详情完整但已经难以操作”更对。
 
+### 4.9 退出信号 + 终端恢复检查清单
+
+`codexs`、`codexm`、`codext` 的几次修复已经证明：对 companion CLI 来说，`SIGINT` / `SIGTERM` 下的 clean exit 不是边角细节，而是 TUI 基础能力。只要进入 raw mode、alt-screen、长任务、watcher 或外部进程包装，这组检查就应该默认存在。
+
+建议把下面这份 checklist 当作 TUI / 长运行 CLI 的默认验收项：
+
+| 检查项 | 目标 | 最低要求 |
+| --- | --- | --- |
+| 统一 signal 入口 | 不要把退出逻辑分散在多个分支里 | 集中处理 `SIGINT`、`SIGTERM`、`SIGHUP`，必要时允许注入自定义 `signalSource` 方便测试 |
+| cleanup 幂等 | 避免重复 cleanup 把终端状态弄乱 | cleanup 必须可重复调用，多次触发不应报错或重复写出异常状态 |
+| raw mode 恢复 | 防止退出后终端卡在 raw mode | 退出时恢复进入前的 raw mode，而不是一律写死成 `false` |
+| alt-screen 恢复 | 防止用户留在空白 alternate screen | 退出时必须显式写出 `showCursor` + `altOff`，并尽量附带 ANSI reset |
+| 输入监听释放 | 避免僵尸监听和后续意外输入 | 卸载 `keypress` / `data` / `resize` / signal handler |
+| 长任务可中断 | 防止 busy 状态下只能强杀进程 | 正在进行的 refresh / switch / search / review 应有 `AbortController` 或等价取消路径 |
+| 退出优先级高于后台收尾 | 防止收到信号后还卡在 await 清理链路 | 收到退出信号后，应优先结束交互并恢复终端；后台 best-effort 收尾不能无限阻塞主退出 |
+| 竞态窗口收口 | 防止“刚启动就收到信号”导致 promise 永不 resolve | 退出 promise / resolve handler 应在最早可用的位置建立，不要等全部初始化后才挂 |
+| 忙状态文案明确 | 用户需要知道现在能不能退出 | busy 模式下提示 `Esc` / `Ctrl-C` 的效果，是取消当前动作还是直接退出整个 TUI |
+| 自动刷新 / timer 停止 | 防止退出后继续刷屏或占用 CPU | 清掉 interval / timeout / animation timer / debounce timer |
+
+推荐的最小测试集合：
+
+1. `SIGTERM` 到达时，TUI 能退出并恢复终端。
+2. `SIGINT` 到达时，TUI 能退出并恢复终端。
+3. busy 状态下，`Esc` 或 `Ctrl-C` 至少能取消当前动作或退出，不会卡死。
+4. cleanup 后 `stdin` 已 pause、raw mode 已恢复、alt-screen 已关闭。
+5. 收到退出信号时，即使 refresh / search / switch 还在 pending，也不会无限挂住。
+
+实现时还应默认避免两个常见坑：
+
+- 不要只处理键盘里的 `Ctrl-C` 字符，而漏掉进程级 `SIGINT` / `SIGTERM`。
+- 不要把“等待所有后台 promise 自然完成”放在退出路径前面，否则很容易出现终端已经不可用但进程还没退出的假死状态。
+
 ## 5. 共同可观测性模型
 
 可观测性不是附加项，而是 companion CLI 的基础设施层。没有它，就很难判断问题出在搜索、路由、托管、平台调用还是降级逻辑。
