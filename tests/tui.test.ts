@@ -364,6 +364,8 @@ test("renderSearchTuiScreen expands the selected thread details in a responsive 
   }));
 
   assert.match(screen, /cwd:/);
+  assert.match(screen, /jsonl:/);
+  assert.match(screen, /fixtures\/codex-home\/sessions\//);
   assert.match(screen, /id: thread-active-aaa/);
   assert.match(screen, /resume: codex resume thread-active-aaa/);
   assert.match(screen, /1\. Assistant/);

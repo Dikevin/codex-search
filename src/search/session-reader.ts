@@ -79,6 +79,7 @@ export interface SearchSessionGroup {
   sessionId: string;
   timestamp: string;
   cwd: string | null;
+  filePath?: string | null;
   title: string | null;
   source: SearchSource;
   messageCount: number | null;
@@ -306,6 +307,7 @@ export function aggregateSearchHitsBySessionWithSummaries(
         sessionId: hit.sessionId,
         timestamp: hit.timestamp,
         cwd: hit.cwd,
+        filePath: hit.filePath,
         title: hit.title,
         source: hit.source,
         messageCount: sessionSummaries?.get(hit.sessionId)?.messageCount ?? null,
@@ -320,6 +322,7 @@ export function aggregateSearchHitsBySessionWithSummaries(
     }
 
     existing.messageCount = sessionSummaries?.get(hit.sessionId)?.messageCount ?? existing.messageCount;
+    existing.filePath ??= hit.filePath;
     existing.matchCount += 1;
     if (!existing.snippets.includes(hit.snippet)) {
       existing.snippets.push(hit.snippet);

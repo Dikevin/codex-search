@@ -41,3 +41,6 @@ This file contains repository-stable engineering constraints for agents.
 - For user-visible CLI behavior changes, run `pnpm verify`.
 - For packaging changes, run `npm pack --dry-run`.
 - Do not add unit tests that only mirror static configuration, hard-coded option lists, or generated shell-completion text. Prefer behavior tests for parsing, search, output shape, dynamic completion data, and TUI interaction.
+- Automated tests and real self-tests must run against cloned temporary Codex history state. Never point them at the operator's real `~/.codex` sessions, archived sessions, title/state sqlite files, or live Codex TUI processes.
+- Prefer copying only the runtime artifacts needed for the scenario into a temp `HOME` or temp codex root, then exercise the real CLI against that clone.
+- Verification must cover resource and lifecycle hygiene, not just search correctness. Explicitly watch for idle polling loops and CPU/memory/IO spikes; check graceful quit and forced-interrupt paths; and confirm worker pools, timers, fs handles, temp files, raw-mode/alt-screen state, and cloned runtime directories are released after success, failure, or cancellation.

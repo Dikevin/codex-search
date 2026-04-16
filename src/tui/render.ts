@@ -548,10 +548,6 @@ function renderDetailHeader(
 ): string[] {
   const lines: string[] = [];
   const reopenable = isReopenableSession(session);
-  const metadataLineCount = getDetailMetadataLineCount(height, {
-    hasCwd: Boolean(session.cwd),
-    hasActionLine: true,
-  });
   const summaryParts = [
     `${ANSI.bold}Details${ANSI.reset}`,
     `${ANSI.dim}${session.matchCount} ${session.matchCount === 1 ? "match" : "matches"}${ANSI.reset}`,
@@ -562,23 +558,27 @@ function renderDetailHeader(
   ].filter(Boolean) as string[];
   lines.push(truncate(summaryParts.join("  "), width));
 
-  if (metadataLineCount >= 2) {
+  if (height >= TUI_LAYOUT.detailMetadataTitleMinHeight) {
     const titlePrefix = `${ANSI.magenta}title:${ANSI.reset} `;
     const titleWidth = Math.max(1, width - displayWidth(stripAnsi(titlePrefix)));
     const title = truncatePlain(sanitizeInlineText(session.title || session.sessionId), titleWidth);
     lines.push(truncate(`${titlePrefix}${highlightText(title, query, caseSensitive)}`, width));
   }
 
-  if (metadataLineCount >= 3) {
+  if (height >= TUI_LAYOUT.detailMetadataIdMinHeight) {
     lines.push(truncate(`${ANSI.magenta}id:${ANSI.reset} ${sanitizeInlineText(session.sessionId)}`, width));
   }
 
-  if (metadataLineCount >= 4) {
+  if (height >= TUI_LAYOUT.detailMetadataActionMinHeight) {
     lines.push(truncate(buildDetailActionLine(session, reopenable), width));
   }
 
-  if (session.cwd && metadataLineCount >= 5) {
+  if (session.cwd && height >= TUI_LAYOUT.detailMetadataCwdMinHeight) {
     lines.push(truncate(`${ANSI.magenta}cwd:${ANSI.reset} ${sanitizeInlineText(session.cwd)}`, width));
+  }
+
+  if (session.filePath && height >= TUI_LAYOUT.detailMetadataFilePathMinHeight) {
+    lines.push(truncate(`${ANSI.magenta}jsonl:${ANSI.reset} ${sanitizeInlineText(session.filePath)}`, width));
   }
 
   return lines;

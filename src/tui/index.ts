@@ -1573,6 +1573,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
       const previewHeight = Math.max(0, detailPanelHeight - getDetailMetadataLineCount(detailPanelHeight, {
         hasCwd: Boolean(expanded?.cwd),
         hasActionLine: true,
+        hasFilePath: Boolean(expanded?.filePath),
       }));
       const detailPageStep = expanded
         ? Math.max(
@@ -1972,6 +1973,7 @@ function syncDetailScroll(
   const previewHeight = Math.max(0, detailHeight - getDetailMetadataLineCount(detailHeight, {
     hasCwd: Boolean(expanded.cwd),
     hasActionLine: true,
+    hasFilePath: Boolean(expanded.filePath),
   }));
   const maxIndex = Math.max(0, expanded.matchPreviews.length - 1);
   const selected = clamp(state.detailSelected, 0, maxIndex);

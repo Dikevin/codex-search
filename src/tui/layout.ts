@@ -19,6 +19,7 @@ export const TUI_LAYOUT = {
   detailMetadataIdMinHeight: 3,
   detailMetadataActionMinHeight: 4,
   detailMetadataCwdMinHeight: 9,
+  detailMetadataFilePathMinHeight: 10,
   sideBySideListRatio: 0.4,
   minSideBySideListWidth: 30,
   minSideBySideDetailWidth: 28,
@@ -83,7 +84,7 @@ export function getSideBySidePaneWidths(width: number): { leftWidth: number; rig
 
 export function getDetailMetadataLineCount(
   height: number,
-  options: { hasCwd: boolean; hasActionLine: boolean },
+  options: { hasCwd: boolean; hasActionLine: boolean; hasFilePath: boolean },
 ): number {
   let lines = 1;
 
@@ -100,6 +101,10 @@ export function getDetailMetadataLineCount(
   }
 
   if (options.hasCwd && height >= TUI_LAYOUT.detailMetadataCwdMinHeight) {
+    lines += 1;
+  }
+
+  if (options.hasFilePath && height >= TUI_LAYOUT.detailMetadataFilePathMinHeight) {
     lines += 1;
   }
 
@@ -130,6 +135,7 @@ export function getDetailPreviewPageStep(detailHeight: number, hasCwd = true): n
   const previewHeight = Math.max(0, detailHeight - getDetailMetadataLineCount(detailHeight, {
     hasCwd,
     hasActionLine: true,
+    hasFilePath: true,
   }));
   return Math.max(1, Math.floor(previewHeight / 4));
 }
