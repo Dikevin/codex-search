@@ -9,6 +9,8 @@ export interface PanelFrame {
 }
 
 export const TUI_LAYOUT = {
+  minRenderableWidth: 36,
+  minRenderableHeight: 8,
   wideDetailsMinWidth: 78,
   panelGap: " │ ",
   panelMinWidth: 56,
@@ -24,6 +26,10 @@ export const TUI_LAYOUT = {
   minSideBySideListWidth: 30,
   minSideBySideDetailWidth: 28,
 } as const;
+
+export function isTerminalTooSmall(width: number, height: number): boolean {
+  return width < TUI_LAYOUT.minRenderableWidth || height < TUI_LAYOUT.minRenderableHeight;
+}
 
 export function computePanelFrame(width: number, height: number): PanelFrame {
   let horizontalMargin = width >= 150 ? 4 : width >= 110 ? 2 : width >= 80 ? 1 : 0;

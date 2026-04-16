@@ -455,6 +455,21 @@ test("renderSearchTuiScreen keeps narrow expanded details separate from the list
   assert.match(screen, /Details/);
 });
 
+test("renderSearchTuiScreen shows an unavailable message when the terminal is too small", () => {
+  const results = createResults(2);
+  const screen = stripAnsi(renderSearchTuiScreen({
+    query: "quota",
+    results,
+    state: createInitialTuiState(),
+    width: 40,
+    height: 7,
+  }));
+
+  assert.match(screen, /Terminal too small to render this TUI\./);
+  assert.match(screen, /Need at least: 36x8/);
+  assert.match(screen, /Resize the terminal and try again\./);
+});
+
 test("renderSearchTuiScreen uses side-by-side details on wide terminals", async () => {
   const results = await searchArchivedSessions({
     query: "quota",
