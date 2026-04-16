@@ -639,13 +639,10 @@ function renderSearchAssistLines(
   const selectedGlobalIndex = searchAssist.selection === "list" ? searchAssist.selectedIndex : -1;
   let runningIndex = 0;
 
-  const previewLines = searchAssist.previews.map((preview, index) => {
+  const previewLines = searchAssist.previews.flatMap((preview, index) => {
     const selected = selectedGlobalIndex === runningIndex;
     runningIndex += 1;
-    const prefix = selected ? `${ANSI.inverse}› ` : "  ";
-    const suffix = selected ? ANSI.reset : "";
-    const label = `${ANSI.dim}[${index + 1}]${ANSI.reset} ${formatShortTimestamp(preview.timestamp)}  ${sanitizeInlineText(preview.title || preview.sessionId)}`;
-    return truncate(`${prefix}${label}${suffix}`, width);
+    return renderPreviewAssistEntry(preview, index, width, selected);
   });
 
   const recentLines = searchAssist.recent.map((entry) => {
@@ -882,6 +879,7 @@ function formatSummary(
   },
 ): string {
   const stateText = options.searching ? `${formatSpinner(nowMs)} Searching...` : "Search complete";
+  const matchCount = countSessionMatches(sessions, results);
   const selected = sessions.length === 0 ? 0 : Math.min(state.selected + 1, sessions.length);
   const visible = getVisibleRange(sessions, state, width, height);
   const expanded = getExpandedSessionForState(sessions, state);
@@ -896,7 +894,7 @@ function formatSummary(
     stateText,
     scanSummary,
     `${sessions.length} threads`,
-    `${results.hits.length} matches`,
+    `${matchCount} matches`,
     sessions.length > 0 ? `selected ${selected}/${sessions.length}` : null,
     sessions.length > 0 ? `visible ${visible.start}-${visible.end}` : null,
     detailSummary ? `detail ${detailSummary}` : null,
@@ -905,7 +903,7 @@ function formatSummary(
   const labeledParts = [
     scanSummary,
     `${sessions.length} threads`,
-    `${results.hits.length} matches`,
+    `${matchCount} matches`,
     sessions.length > 0 ? `selected ${selected}/${sessions.length}` : null,
     sessions.length > 0 ? `visible ${visible.start}-${visible.end}` : null,
     detailSummary ? `detail ${detailSummary}` : null,
@@ -915,7 +913,7 @@ function formatSummary(
     options.searching ? "searching" : "done",
     scanSummary,
     `${sessions.length} threads`,
-    `${results.hits.length} matches`,
+    `${matchCount} matches`,
     sessions.length > 0 ? `sel ${selected}/${sessions.length}` : null,
     sessions.length > 0 ? `vis ${visible.start}-${visible.end}` : null,
     detailSummary ? `det ${detailSummary}` : null,
@@ -929,6 +927,38 @@ function formatSummary(
   }
 
   return compactParts.join("  ");
+}
+
+function renderPreviewAssistEntry(
+  preview: SearchSessionGroup,
+  index: number,
+  width: number,
+  selected: boolean,
+): string[] {
+  const prefix = selected ? `${ANSI.inverse}› ` : "  ";
+  const suffix = selected ? ANSI.reset : "";
+  const matchesLabel = width >= 88
+    ? `${preview.matchCount} ${preview.matchCount === 1 ? "match" : "matches"}`
+    : `${preview.matchCount}m`;
+  const title = sanitizeInlineText(preview.title || preview.sessionId);
+  const header = truncate(
+    `${prefix}${ANSI.dim}[${index + 1}]${ANSI.reset} ${formatShortTimestamp(preview.timestamp)}  ${title}  ${ANSI.dim}${matchesLabel}${ANSI.reset}${suffix}`,
+    width,
+  );
+  const snippet = sanitizeInlineText(preview.previewSnippet || preview.matchPreviews[0]?.text || "");
+  const body = truncate(`${selected ? `${ANSI.inverse}  ` : "  "}${snippet}${suffix}`, width);
+  return [header, body];
+}
+
+function countSessionMatches(
+  sessions: SearchSessionGroup[],
+  results: SearchResultsPage,
+): number {
+  if (sessions.length === 0) {
+    return results.hits.length;
+  }
+
+  return sessions.reduce((total, session) => total + Math.max(1, session.matchCount), 0);
 }
 
 function divider(width: number): string {

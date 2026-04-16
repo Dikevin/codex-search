@@ -90,7 +90,7 @@
 - The picker renders inside a centered panel instead of drawing data directly against the terminal edge.
 - Bare `codexs` opens a centered home screen before the first search.
 - The active search input lives in a bottom dock above the status bar rather than at the top of the panel.
-- While searching, the dock can show `preview`, `recent`, and `project` sections above the input line.
+- While searching, the dock can show `preview`, `recent`, and `project` sections above the input line. `preview` rows summarize threads with a match count and representative match line, and pressing `Enter` seeds the formal result list from the current preview set before full streaming catches up.
 - Rows prefer Codex thread titles when available.
 - Matching threads start appearing as soon as each file produces hits, and later hits from those threads keep streaming in while search continues.
 - Multi-file scans use worker threads by default, so different session files can be searched in parallel.

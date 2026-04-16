@@ -25,6 +25,7 @@ import {
   type SearchArchivedSessionsOptions,
   type SearchHit,
   type SearchResultsPage,
+  type SearchSessionGroup,
   type SearchSource,
   type SearchWarning,
   searchArchivedSessions,
@@ -69,10 +70,12 @@ interface RunCliOptions extends Partial<CliStreams> {
       query: string;
       filters: TuiSearchFilters;
       reason?: "submit" | "suggestion" | "filters";
+      seedSessions?: SearchSessionGroup[];
     }) => Promise<{
       query: string;
       caseSensitive?: boolean;
       results?: SearchResultsPage;
+      seedSessions?: SearchSessionGroup[];
       hitStream?: AsyncIterable<SearchHit>;
       cancelSearch?: () => void;
       sourceLabel?: string;
@@ -539,11 +542,12 @@ export async function runCli(
   const exitCode = await runTui({
     ...initialSession,
     initialFilters,
-    onStartSearch: async ({ query, filters, reason }) => createInteractiveSearchSession({
+    onStartSearch: async ({ query, filters, reason, seedSessions }) => createInteractiveSearchSession({
       parsed,
       query,
       filters,
       now,
+      seedSessions,
       recordHistory: reason !== "filters",
       writeSearchLog: writeSearchHistory,
       writeEventLog,
@@ -1041,12 +1045,14 @@ function createInteractiveSearchSession(options: {
   query: string;
   filters: TuiSearchFilters;
   now: Date | undefined;
+  seedSessions?: SearchSessionGroup[];
   recordHistory?: boolean;
   writeSearchLog: (codexHomeDir: string | null | undefined, record: SearchLogRecord) => Promise<void>;
   writeEventLog: (codexHomeDir: string | null | undefined, record: EventLogRecord) => Promise<void>;
 }): {
   query: string;
   caseSensitive: boolean;
+  seedSessions?: SearchSessionGroup[];
   hitStream: AsyncIterable<SearchHit>;
   cancelSearch: () => void;
   sourceLabel: string;
@@ -1102,6 +1108,7 @@ function createInteractiveSearchSession(options: {
   return {
     query: options.query,
     caseSensitive: options.filters.caseSensitive,
+    seedSessions: options.seedSessions,
     hitStream: createLoggedInteractiveHitStream(
       trackedStream,
       searchStats,

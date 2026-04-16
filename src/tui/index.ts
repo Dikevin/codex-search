@@ -53,6 +53,7 @@ const NARROW_SUGGESTION_LIMIT = 2;
 
 interface TuiSearchModel {
   hits: SearchHit[];
+  seedSessions: SearchSessionGroup[];
   sortedHits: SearchHit[];
   sessions: SearchSessionGroup[];
   searchDone: boolean;
@@ -86,6 +87,7 @@ interface ActiveSearchSession {
   query: string;
   caseSensitive: boolean;
   results?: SearchResultsPage;
+  seedSessions?: SearchSessionGroup[];
   iterator?: AsyncIterator<SearchHit>;
   cancelSearch?: () => void;
   sourceLabel?: string;
@@ -122,6 +124,16 @@ export function toggleExpandedSelection(
   state: TuiState,
   hits: SearchHit[],
 ): TuiState {
+  return toggleExpandedSelectionForSessions(
+    state,
+    aggregateSearchHitsBySession(hits),
+  );
+}
+
+function toggleExpandedSelectionForSessions(
+  state: TuiState,
+  sessions: SearchSessionGroup[],
+): TuiState {
   if (state.expandedSessionId) {
     return {
       ...state,
@@ -132,7 +144,6 @@ export function toggleExpandedSelection(
     };
   }
 
-  const sessions = aggregateSearchHitsBySession(hits);
   const selected = sessions[state.selected];
   if (!selected) {
     return state;
@@ -158,7 +169,11 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
   let currentCaseSensitive = currentSearch.caseSensitive;
   let currentCwdLabel = currentSearch.cwdLabel;
   let searchGeneration = 0;
-  let model = createTuiSearchModel(currentSearch.results?.hits ?? [], !currentSearch.iterator);
+  let model = createTuiSearchModel(
+    currentSearch.results?.hits ?? [],
+    !currentSearch.iterator,
+    currentSearch.seedSessions ?? [],
+  );
   let state = createInitialTuiState();
   let detailSearch: DetailSearchState = {
     active: false,
@@ -451,7 +466,11 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
     currentQuery = currentSearch.query;
     currentCaseSensitive = currentSearch.caseSensitive;
     currentCwdLabel = currentSearch.cwdLabel;
-    model = createTuiSearchModel(currentSearch.results?.hits ?? [], !currentSearch.iterator);
+    model = createTuiSearchModel(
+      currentSearch.results?.hits ?? [],
+      !currentSearch.iterator,
+      currentSearch.seedSessions ?? [],
+    );
     state = createInitialTuiState();
     detailSearch = {
       active: false,
@@ -502,10 +521,20 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
     }
 
     await disposeSearchSession(currentSearch);
+    const seedSessions = (
+      reason === "submit"
+      && globalSearch.active
+      && searchAssist.previews.length > 0
+      && nextQuery === globalSearch.query.trim()
+    )
+      ? [...searchAssist.previews]
+      : undefined;
+
     const session = await options.onStartSearch({
       query: nextQuery,
       filters,
       reason,
+      seedSessions,
     });
     bindSearchSession(session);
   };
@@ -1427,7 +1456,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
               detailSelected: 0,
               detailScrollTop: 0,
             })
-          : clearStatus(toggleExpandedSelection(state, results.hits));
+          : clearStatus(toggleExpandedSelectionForSessions(state, sessions));
         const nextExpanded = getExpandedSession(sessions, nextState);
 
         if (!nextExpanded) {
@@ -1503,7 +1532,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
         )
         : 1;
       if (key.name === "space") {
-        state = clearStatus(toggleExpandedSelection(state, results.hits));
+        state = clearStatus(toggleExpandedSelectionForSessions(state, sessions));
         state = clampStateForViewport(state, sessions, viewport.width, viewport.height);
       } else if ((key.name === "right" || key.name === "l") && expanded && state.focus === "list") {
         state = clearStatus({
@@ -1629,6 +1658,7 @@ function createActiveSearchSession(session: TuiSearchSession): ActiveSearchSessi
     query: session.query,
     caseSensitive: session.caseSensitive ?? false,
     results: session.results,
+    seedSessions: session.seedSessions,
     iterator: session.hitStream?.[Symbol.asyncIterator](),
     cancelSearch: session.cancelSearch,
     sourceLabel: session.sourceLabel,
@@ -1753,9 +1783,14 @@ function archivedUnavailableMessage(hit: SearchHit): string {
   return `Archived thread cannot be reopened directly: ${hit.sessionId}. Use --active to search reopenable threads.`;
 }
 
-function createTuiSearchModel(initialHits: SearchHit[], searchDone: boolean): TuiSearchModel {
+function createTuiSearchModel(
+  initialHits: SearchHit[],
+  searchDone: boolean,
+  seedSessions: SearchSessionGroup[] = [],
+): TuiSearchModel {
   return {
     hits: [...initialHits],
+    seedSessions: [...seedSessions],
     sortedHits: [],
     sessions: [],
     searchDone,
@@ -1764,6 +1799,7 @@ function createTuiSearchModel(initialHits: SearchHit[], searchDone: boolean): Tu
 }
 
 function appendTuiSearchHit(model: TuiSearchModel, hit: SearchHit): void {
+  model.seedSessions = model.seedSessions.filter((session) => session.sessionId !== hit.sessionId);
   model.hits.push(hit);
   model.dirty = true;
 }
@@ -1796,7 +1832,17 @@ function ensureTuiSearchModel(
   }
 
   model.sortedHits = [...model.hits].sort((left, right) => right.timestamp.localeCompare(left.timestamp));
-  model.sessions = aggregateSearchHitsBySessionWithSummaries(model.sortedHits, sessionSummaries);
+  const confirmedSessions = aggregateSearchHitsBySessionWithSummaries(model.sortedHits, sessionSummaries);
+  if (model.seedSessions.length === 0) {
+    model.sessions = confirmedSessions;
+    model.dirty = false;
+    return;
+  }
+
+  const confirmedSessionIds = new Set(confirmedSessions.map((session) => session.sessionId));
+  const provisionalSessions = model.seedSessions.filter((session) => !confirmedSessionIds.has(session.sessionId));
+  model.sessions = [...confirmedSessions, ...provisionalSessions]
+    .sort((left, right) => right.timestamp.localeCompare(left.timestamp));
   model.dirty = false;
 }
 
@@ -1929,7 +1975,8 @@ function getSelectedHit(
     return null;
   }
 
-  return hits.find((hit) => hit.sessionId === sessionId) ?? null;
+  return hits.find((hit) => hit.sessionId === sessionId)
+    ?? (sessions[selectedIndex] ? searchSessionToHit(sessions[selectedIndex]!) : null);
 }
 
 function findMatchingPreviewIndex(

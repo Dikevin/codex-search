@@ -27,6 +27,7 @@ export interface TuiSearchSession {
   query: string;
   caseSensitive?: boolean;
   results?: SearchResultsPage;
+  seedSessions?: SearchSessionGroup[];
   hitStream?: AsyncIterable<SearchHit>;
   cancelSearch?: () => void;
   sourceLabel?: string;
@@ -72,6 +73,7 @@ export interface RunSearchTuiOptions extends Partial<TuiStreams>, Partial<TuiAct
     query: string;
     filters: TuiSearchFilters;
     reason?: "submit" | "suggestion" | "filters";
+    seedSessions?: SearchSessionGroup[];
   }) => Promise<TuiSearchSession>;
   onLuckySearch?: (request: { query: string; filters: TuiSearchFilters }) => Promise<{
     opened: boolean;

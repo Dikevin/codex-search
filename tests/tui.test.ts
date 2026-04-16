@@ -168,6 +168,38 @@ function createThreadResults(matchCount: number, overrides?: {
   };
 }
 
+function createPreviewSession(overrides?: {
+  sessionId?: string;
+  title?: string;
+  timestamp?: string;
+  matchCount?: number;
+  previewSnippet?: string;
+  source?: "active" | "archived";
+}) {
+  const sessionId = overrides?.sessionId ?? "thread-preview-1";
+  const previewSnippet = overrides?.previewSnippet ?? "quota exceeded on desktop launch";
+  return {
+    sessionId,
+    timestamp: overrides?.timestamp ?? "2026-04-16T10:00:00.000Z",
+    cwd: "/tmp/codex-search",
+    title: overrides?.title ?? "quota exceeded on desktop launch",
+    source: overrides?.source ?? "active",
+    messageCount: 3,
+    previewSnippet,
+    snippets: [previewSnippet],
+    matchPreviews: [{
+      kind: "user" as const,
+      label: "User",
+      text: previewSnippet,
+      timestamp: "2026-04-16T10:00:30.000Z",
+      secondaryText: null,
+    }],
+    matchCount: overrides?.matchCount ?? 4,
+    resumeCommand: `codex resume ${sessionId}`,
+    deepLink: `codex://threads/${sessionId}`,
+  };
+}
+
 test("renderSearchTuiScreen shows thread-level rows by default", async () => {
   const results = await searchArchivedSessions({
     query: "quota",
@@ -221,26 +253,7 @@ test("renderSearchTuiScreen shows a centered home search view before the first q
       historyEnabled: true,
       recent: [{ kind: "recent", value: "quota" }, { kind: "recent", value: "deploy" }],
       projects: [{ kind: "project", value: "codex-search" }],
-      previews: [{
-        sessionId: "thread-preview-1",
-        timestamp: "2026-04-16T10:00:00.000Z",
-        cwd: "/tmp/codex-search",
-        title: "quota exceeded on desktop launch",
-        source: "active",
-        messageCount: 3,
-        previewSnippet: "quota exceeded on desktop launch",
-        snippets: ["quota exceeded on desktop launch"],
-        matchPreviews: [{
-          kind: "user",
-          label: "User",
-          text: "quota exceeded on desktop launch",
-          timestamp: "2026-04-16T10:00:30.000Z",
-          secondaryText: null,
-        }],
-        matchCount: 1,
-        resumeCommand: "codex resume thread-preview-1",
-        deepLink: "codex://threads/thread-preview-1",
-      }],
+      previews: [createPreviewSession()],
       previewLoading: false,
     },
   }));
@@ -250,6 +263,8 @@ test("renderSearchTuiScreen shows a centered home search view before the first q
   assert.match(screen, /project/i);
   assert.match(screen, /preview/i);
   assert.match(screen, /\[1\].*quota exceeded on desktop launch/i);
+  assert.match(screen, /4 matches/i);
+  assert.match(screen, /quota exceeded on desktop launch/i);
   assert.match(screen, /search>\s*qu/i);
   assert.match(screen, /Enter search/i);
   assert.match(screen, /1-5 open/i);
@@ -1221,26 +1236,7 @@ test("runSearchTui opens preview results directly with number shortcuts from the
       recent: [{ kind: "recent", value: "quota" }],
       projects: [{ kind: "project", value: "codex-search" }],
     }),
-    onPreviewSearch: async () => [{
-      sessionId: "thread-preview-1",
-      timestamp: "2026-04-16T10:00:00.000Z",
-      cwd: "/tmp/codex-search",
-      title: "quota exceeded on desktop launch",
-      source: "active",
-      messageCount: 3,
-      previewSnippet: "quota exceeded on desktop launch",
-      snippets: ["quota exceeded on desktop launch"],
-      matchPreviews: [{
-        kind: "user",
-        label: "User",
-        text: "quota exceeded on desktop launch",
-        timestamp: "2026-04-16T10:00:30.000Z",
-        secondaryText: null,
-      }],
-      matchCount: 1,
-      resumeCommand: "codex resume thread-preview-1",
-      deepLink: "codex://threads/thread-preview-1",
-    }],
+    onPreviewSearch: async () => [createPreviewSession({ matchCount: 1 })],
     openHit: async (hit) => {
       opened.push(hit.deepLink);
     },
@@ -1253,6 +1249,78 @@ test("runSearchTui opens preview results directly with number shortcuts from the
   }
   await new Promise((resolve) => setTimeout(resolve, 260));
   stdin.emit("keypress", "1", { name: "1" });
+
+  assert.equal(await run, 0);
+  assert.deepEqual(opened, ["codex://threads/thread-preview-1"]);
+});
+
+test("runSearchTui seeds preview results into the formal list before streamed hits arrive", async () => {
+  const stdin = createTuiStdin();
+  const stdout = createTuiStdout(110, 24);
+  const opened: string[] = [];
+  let releaseHit: (() => void) | null = null;
+
+  const run = runSearchTui({
+    query: "",
+    stdin,
+    stdout: stdout.stream,
+    onLoadSuggestions: async () => ({
+      recent: [],
+      projects: [],
+    }),
+    onPreviewSearch: async () => [createPreviewSession()],
+    onStartSearch: async ({ query, seedSessions }) => {
+      async function* hitStream() {
+        await new Promise<void>((resolve) => {
+          releaseHit = resolve;
+        });
+        yield {
+          sessionId: "thread-preview-1",
+          timestamp: "2026-04-16T10:00:00.000Z",
+          cwd: "/tmp/codex-search",
+          title: "quota exceeded on desktop launch",
+          snippet: "quota exceeded on desktop launch",
+          preview: {
+            kind: "user" as const,
+            label: "User",
+            text: "quota exceeded on desktop launch",
+            timestamp: "2026-04-16T10:00:30.000Z",
+            secondaryText: null,
+          },
+          source: "active" as const,
+          filePath: "/tmp/thread-preview-1.jsonl",
+          resumeCommand: "codex resume thread-preview-1",
+          deepLink: "codex://threads/thread-preview-1",
+        };
+      }
+
+      return {
+        query,
+        hitStream: hitStream(),
+        seedSessions,
+      };
+    },
+    openHit: async (hit) => {
+      opened.push(hit.deepLink);
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  for (const char of ["q", "u"]) {
+    stdin.emit("keypress", char, { name: char });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  stdin.emit("keypress", "\r", { name: "return" });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  const seededScreen = stripAnsi(stdout.read());
+  assert.match(seededScreen, /thread search/i);
+  assert.match(seededScreen, /quota exceeded on desktop launch/i);
+  assert.match(seededScreen, /4 matches/i);
+
+  stdin.emit("keypress", "\r", { name: "return" });
+  releaseHit?.();
 
   assert.equal(await run, 0);
   assert.deepEqual(opened, ["codex://threads/thread-preview-1"]);
