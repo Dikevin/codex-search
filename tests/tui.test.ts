@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { join } from "node:path";
 
@@ -76,6 +77,22 @@ function createTuiStdout(columns: number, rows: number) {
   };
 }
 
+function createBusyTuiStdout(columns: number, rows: number, blockMs: number) {
+  const stdout = createTuiStdout(columns, rows);
+  const realWrite = stdout.stream.write.bind(stdout.stream);
+  const realNow = Date.now.bind(Date);
+
+  stdout.stream.write = ((chunk: string | Uint8Array, encoding?: BufferEncoding | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+    const start = realNow();
+    while (realNow() - start < blockMs) {
+      // Busy-wait to simulate an expensive terminal repaint.
+    }
+    return realWrite(chunk, encoding as BufferEncoding, callback);
+  }) as typeof stdout.stream.write;
+
+  return stdout;
+}
+
 function createTuiStdin() {
   const stream = new PassThrough() as NodeJS.ReadStream;
   stream.isTTY = true;
@@ -94,6 +111,22 @@ async function waitForCondition(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (condition()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  assert.fail("Timed out waiting for condition.");
+}
+
+async function waitForConditionUsingNow(
+  condition: () => boolean,
+  now: () => number,
+  timeoutMs = 200,
+): Promise<void> {
+  const deadline = now() + timeoutMs;
+  while (now() < deadline) {
     if (condition()) {
       return;
     }
@@ -195,6 +228,27 @@ function createPreviewSession(overrides?: {
       secondaryText: null,
     }],
     matchCount: overrides?.matchCount ?? 4,
+    resumeCommand: `codex resume ${sessionId}`,
+    deepLink: `codex://threads/${sessionId}`,
+  };
+}
+
+function createInfiniteHit(sessionId = "thread-busy") {
+  return {
+    sessionId,
+    timestamp: "2026-04-16T10:00:00.000Z",
+    cwd: "/tmp/busy-thread",
+    title: "Busy thread",
+    snippet: "quota busy search result",
+    preview: {
+      kind: "user" as const,
+      label: "User",
+      text: "quota busy search result",
+      timestamp: "2026-04-16T10:00:30.000Z",
+      secondaryText: null,
+    },
+    source: "active" as const,
+    filePath: `/tmp/${sessionId}.jsonl`,
     resumeCommand: `codex resume ${sessionId}`,
     deepLink: `codex://threads/${sessionId}`,
   };
@@ -1570,6 +1624,105 @@ test("runSearchTui restores the picker after resume exits", async () => {
 
   stdin.emit("keypress", "q", { name: "q" });
 
+  assert.equal(await run, 0);
+});
+
+test("runSearchTui handles escape promptly during a busy streamed search", async () => {
+  const stdin = createTuiStdin();
+  const stdout = createBusyTuiStdout(100, 20, 3);
+  let cancelled = false;
+  const originalDateNow = Date.now;
+  const realNow = Date.now.bind(Date);
+  let fakeNow = 1_000;
+  let settled = false;
+
+  Date.now = () => {
+    fakeNow += 250;
+    return fakeNow;
+  };
+
+  async function* hitStream() {
+    let index = 0;
+    while (true) {
+      yield {
+        ...createInfiniteHit(`thread-busy-${index + 1}`),
+        sessionId: `thread-busy-${index + 1}`,
+        filePath: `/tmp/thread-busy-${index + 1}.jsonl`,
+        resumeCommand: `codex resume thread-busy-${index + 1}`,
+        deepLink: `codex://threads/thread-busy-${index + 1}`,
+      };
+      index += 1;
+    }
+  }
+
+  const run = runSearchTui({
+    query: "quota",
+    hitStream: hitStream(),
+    stdin,
+    stdout: stdout.stream,
+    cancelSearch: () => {
+      cancelled = true;
+    },
+  }).then((exitCode) => {
+    settled = true;
+    return exitCode;
+  });
+
+  try {
+    await waitForConditionUsingNow(() => stdin.listenerCount("keypress") > 0, realNow, 40);
+    setTimeout(() => {
+      stdin.emit("keypress", "", { name: "escape" });
+    }, 0);
+
+    await waitForConditionUsingNow(() => cancelled, realNow, 40);
+    await waitForConditionUsingNow(() => stdin.listenerCount("keypress") > 0, realNow, 40);
+    stdin.emit("keypress", "q", { name: "q" });
+    assert.equal(await run, 0);
+  } finally {
+    Date.now = originalDateNow;
+    if (!settled) {
+      stdin.emit("keypress", "\u0003", { name: "c", ctrl: true });
+      await run;
+    }
+  }
+});
+
+test("runSearchTui exits on SIGINT during a busy streamed search", async () => {
+  const stdin = createTuiStdin();
+  const stdout = createBusyTuiStdout(100, 20, 3);
+  const signalSource = new EventEmitter();
+  let cancelled = false;
+
+  async function* hitStream() {
+    let index = 0;
+    while (true) {
+      yield {
+        ...createInfiniteHit(`thread-signal-${index + 1}`),
+        sessionId: `thread-signal-${index + 1}`,
+        filePath: `/tmp/thread-signal-${index + 1}.jsonl`,
+        resumeCommand: `codex resume thread-signal-${index + 1}`,
+        deepLink: `codex://threads/thread-signal-${index + 1}`,
+      };
+      index += 1;
+    }
+  }
+
+  const run = runSearchTui({
+    query: "quota",
+    hitStream: hitStream(),
+    stdin,
+    stdout: stdout.stream,
+    cancelSearch: () => {
+      cancelled = true;
+    },
+    signalSource,
+  });
+
+  setTimeout(() => {
+    signalSource.emit("SIGINT");
+  }, 0);
+
+  await waitForCondition(() => cancelled, 80);
   assert.equal(await run, 0);
 });
 

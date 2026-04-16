@@ -56,6 +56,7 @@ export interface TuiSearchAssistItem {
 export interface RunSearchTuiOptions extends Partial<TuiStreams>, Partial<TuiActions> {
   query: string;
   caseSensitive?: boolean;
+  signalSource?: Pick<NodeJS.Process, "on" | "off">;
   results?: SearchResultsPage;
   hitStream?: AsyncIterable<SearchHit>;
   cancelSearch?: () => void;
@@ -154,7 +155,8 @@ export interface RenderSearchTuiScreenOptions {
 
 export type TuiInputEvent =
   | { type: "key"; key: readline.Key; text: string }
-  | { type: "resize" };
+  | { type: "resize" }
+  | { type: "signal"; signal: NodeJS.Signals };
 
 export type SearchStreamEvent = {
   type: "search";

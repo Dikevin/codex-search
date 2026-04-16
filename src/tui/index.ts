@@ -44,12 +44,12 @@ import type { SearchProgress } from "../search/view-filter.js";
 
 const SEARCH_RENDER_INTERVAL_MS = 200;
 const ANIMATION_RENDER_INTERVAL_MS = 100;
-const SEARCH_EVENTS_PER_YIELD = 25;
 const PREVIEW_DEBOUNCE_MS = 200;
 const WIDE_PREVIEW_LIMIT = 5;
 const NARROW_PREVIEW_LIMIT = 3;
 const WIDE_SUGGESTION_LIMIT = 3;
 const NARROW_SUGGESTION_LIMIT = 2;
+const EXIT_SIGNALS: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
 
 interface TuiSearchModel {
   hits: SearchHit[];
@@ -200,7 +200,6 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
   let renderTimer: NodeJS.Timeout | null = null;
   let animationTimer: NodeJS.Timeout | null = null;
   let lastRenderAt = 0;
-  let searchEventsSinceYield = 0;
   let suggestionGeneration = 0;
   let previewGeneration = 0;
   let previewDebounceTimer: NodeJS.Timeout | null = null;
@@ -708,13 +707,13 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
     pendingSearch = null;
   };
 
-  let pendingInput = waitForTuiEvent(stdin, stdout).then((event) => ({
+  let pendingInput = waitForTuiEvent(stdin, stdout, options.signalSource ?? process).then((event) => ({
     type: "input" as const,
     event,
   }));
   let pendingSearch = nextSearchEvent(currentSearch.iterator, searchGeneration);
   const armInput = () => {
-    pendingInput = waitForTuiEvent(stdin, stdout).then((event) => ({
+    pendingInput = waitForTuiEvent(stdin, stdout, options.signalSource ?? process).then((event) => ({
       type: "input" as const,
       event,
     }));
@@ -758,11 +757,7 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
           scheduleAnimationRender();
         }
 
-        searchEventsSinceYield += 1;
-        if (searchEventsSinceYield >= SEARCH_EVENTS_PER_YIELD) {
-          searchEventsSinceYield = 0;
-          await new Promise((resolve) => setImmediate(resolve));
-        }
+        await yieldToEventLoop();
         continue;
       }
 
@@ -782,6 +777,10 @@ export async function runSearchTui(options: RunSearchTuiOptions): Promise<number
         clearScheduledRender();
         render();
         continue;
+      }
+
+      if (inputEvent.type === "signal") {
+        return 0;
       }
 
       const key = inputEvent.key;
@@ -2275,6 +2274,7 @@ function nextSearchEvent(
 function waitForTuiEvent(
   stdin: NodeJS.ReadStream,
   stdout: NodeJS.WriteStream,
+  signalSource: Pick<NodeJS.Process, "on" | "off">,
 ): Promise<TuiInputEvent> {
   return new Promise((resolve) => {
     const onKeypress = (text: string, key: readline.Key) => {
@@ -2285,12 +2285,28 @@ function waitForTuiEvent(
       cleanup();
       resolve({ type: "resize" });
     };
+    const signalHandlers = EXIT_SIGNALS.map((signal) => {
+      const onSignal = () => {
+        cleanup();
+        resolve({ type: "signal", signal });
+      };
+
+      signalSource.on(signal, onSignal);
+      return { signal, onSignal };
+    });
     const cleanup = () => {
       stdin.off("keypress", onKeypress);
       stdout.off("resize", onResize);
+      for (const { signal, onSignal } of signalHandlers) {
+        signalSource.off(signal, onSignal);
+      }
     };
 
     stdin.on("keypress", onKeypress);
     stdout.on("resize", onResize);
   });
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
