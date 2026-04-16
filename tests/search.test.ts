@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -287,6 +287,11 @@ test("searchArchivedSessions keeps recently updated sessions even when the file 
       "2026-04-15T10:02:00.000Z",
     ],
   });
+  await utimes(
+    sessionPath,
+    new Date("2026-04-15T10:02:00.000Z"),
+    new Date("2026-04-15T10:02:00.000Z"),
+  );
 
   const results = await searchArchivedSessions({
     query: "quota",

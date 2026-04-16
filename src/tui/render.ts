@@ -12,6 +12,7 @@ import {
   getPanelContentSize,
   getSideBySidePaneWidths,
   getStackedListHeight,
+  isTerminalTooSmall,
   TUI_LAYOUT,
   usesWideDetailsLayout,
 } from "./layout.js";
@@ -59,6 +60,10 @@ const SPINNER_INTERVAL_MS = 100;
 export { getDetailPanelHeightForLayout, getDetailPreviewPageStep, getPanelContentSize } from "./layout.js";
 
 export function renderSearchTuiScreen(options: RenderSearchTuiScreenOptions): string {
+  if (isTerminalTooSmall(options.width, options.height)) {
+    return renderTooSmallTuiScreen(options.width, options.height);
+  }
+
   const sessions = options.sessions ?? aggregateSearchHitsBySession(options.results.hits);
   const frame = computePanelFrame(options.width, options.height);
   const { width: innerWidth, height: innerHeight } = getPanelContentSize(options.width, options.height);
@@ -127,6 +132,22 @@ export function renderSearchTuiScreen(options: RenderSearchTuiScreenOptions): st
   ));
 
   return renderPanelScreen(options.width, options.height, frame, fitLines(panelLines, innerHeight));
+}
+
+function renderTooSmallTuiScreen(width: number, height: number): string {
+  const safeWidth = Math.max(1, width);
+  const lines = [
+    centerLine(`${ANSI.bold}${ANSI.cyan}codexs${ANSI.reset}`, safeWidth),
+    "",
+    centerLine("Terminal too small to render this TUI.", safeWidth),
+    centerLine(
+      `Current: ${width}x${height} | Need at least: ${TUI_LAYOUT.minRenderableWidth}x${TUI_LAYOUT.minRenderableHeight}`,
+      safeWidth,
+    ),
+    centerLine("Resize the terminal and try again.", safeWidth),
+  ];
+
+  return fitLines(lines, Math.max(1, height)).join("\n");
 }
 
 function renderBodyLines(
