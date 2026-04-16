@@ -228,7 +228,7 @@ test("renderSearchTuiScreen shows thread-level rows by default", async () => {
 });
 
 test("renderSearchTuiScreen shows a centered home search view before the first query", () => {
-  const screen = stripAnsi(renderSearchTuiScreen({
+  const screenRaw = renderSearchTuiScreen({
     query: "",
     results: {
       hits: [],
@@ -256,7 +256,8 @@ test("renderSearchTuiScreen shows a centered home search view before the first q
       previews: [createPreviewSession()],
       previewLoading: false,
     },
-  }));
+  });
+  const screen = stripAnsi(screenRaw);
 
   assert.match(screen, /search local codex threads/i);
   assert.match(screen, /recent/i);
@@ -265,11 +266,64 @@ test("renderSearchTuiScreen shows a centered home search view before the first q
   assert.match(screen, /\[1\].*quota exceeded on desktop launch/i);
   assert.match(screen, /4 matches/i);
   assert.match(screen, /quota exceeded on desktop launch/i);
+  assert.match(screenRaw, /\u001b\[1m\u001b\[4mqu\u001b\[0m/i);
   assert.match(screen, /search>\s*qu/i);
   assert.match(screen, /Enter search/i);
   assert.match(screen, /1-5 open/i);
   assert.match(screen, /\^F filters/i);
   assert.match(screen, /Esc quit/i);
+});
+
+test("renderSearchTuiScreen preview prefers a keyword-matching snippet over a generic summary", () => {
+  const screen = stripAnsi(renderSearchTuiScreen({
+    query: "quota",
+    results: {
+      hits: [],
+      page: 1,
+      pageSize: 5,
+      offset: 0,
+      hasMore: false,
+    },
+    state: createInitialTuiState(),
+    width: 100,
+    height: 24,
+    home: {
+      active: true,
+      query: "quota",
+    },
+    prompt: "search> quota",
+    searchHint: "global-search",
+    searchAssist: {
+      active: true,
+      selection: "input",
+      selectedIndex: 0,
+      historyEnabled: true,
+      recent: [],
+      projects: [],
+      previews: [{
+        ...createPreviewSession({
+          previewSnippet: "assistant summary without the search term",
+        }),
+        matchPreviews: [{
+          kind: "assistant",
+          label: "Assistant",
+          text: "assistant summary without the search term",
+          timestamp: "2026-04-16T10:00:30.000Z",
+          secondaryText: null,
+        }, {
+          kind: "user",
+          label: "User",
+          text: "quota exceeded on desktop launch",
+          timestamp: "2026-04-16T10:00:00.000Z",
+          secondaryText: null,
+        }],
+      }],
+      previewLoading: false,
+    },
+  }));
+
+  assert.match(screen, /quota exceeded on desktop launch/i);
+  assert.doesNotMatch(screen, /assistant summary without the search term/i);
 });
 
 test("renderSearchTuiScreen places passive search context above the status bar", () => {

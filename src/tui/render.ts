@@ -84,7 +84,7 @@ export function renderSearchTuiScreen(options: RenderSearchTuiScreenOptions): st
 
   panelLines.push(`${ANSI.bold}${ANSI.cyan}codexs${ANSI.reset}  ${ANSI.dim}thread search${ANSI.reset}`);
   let bodyLines = home?.active
-    ? renderHomeBodyLines(innerWidth, bodyHeight, home, options.searchAssist ?? null)
+    ? renderHomeBodyLines(innerWidth, bodyHeight, home, options.searchAssist ?? null, options.caseSensitive ?? false)
     : sessions.length === 0
       ? fitLines([
         options.searching ? "Searching..." : "No matches found.",
@@ -141,7 +141,7 @@ function renderBodyLines(
   searchAssist: RenderSearchTuiScreenOptions["searchAssist"],
 ): string[] {
   const assistLines = searchAssist?.active
-    ? renderSearchAssistLines(width, bodyHeight, searchAssist)
+    ? renderSearchAssistLines(width, bodyHeight, searchAssist, query, caseSensitive)
     : [];
   const contentHeight = Math.max(0, bodyHeight - assistLines.length);
 
@@ -161,9 +161,10 @@ function renderHomeBodyLines(
   height: number,
   home: NonNullable<RenderSearchTuiScreenOptions["home"]>,
   searchAssist: RenderSearchTuiScreenOptions["searchAssist"],
+  caseSensitive: boolean,
 ): string[] {
   const assistLines = searchAssist?.active
-    ? renderSearchAssistLines(width, height, searchAssist)
+    ? renderSearchAssistLines(width, height, searchAssist, home.query, caseSensitive)
     : [];
   const contentHeight = Math.max(0, height - assistLines.length);
   const centerLines = [
@@ -621,6 +622,8 @@ function renderSearchAssistLines(
   width: number,
   maxHeight: number,
   searchAssist: NonNullable<RenderSearchTuiScreenOptions["searchAssist"]>,
+  query: string,
+  caseSensitive: boolean,
 ): string[] {
   const lines: string[] = [];
   const pushSection = (title: string, items: string[]) => {
@@ -642,7 +645,7 @@ function renderSearchAssistLines(
   const previewLines = searchAssist.previews.flatMap((preview, index) => {
     const selected = selectedGlobalIndex === runningIndex;
     runningIndex += 1;
-    return renderPreviewAssistEntry(preview, index, width, selected);
+    return renderPreviewAssistEntry(preview, index, width, selected, query, caseSensitive);
   });
 
   const recentLines = searchAssist.recent.map((entry) => {
@@ -934,20 +937,58 @@ function renderPreviewAssistEntry(
   index: number,
   width: number,
   selected: boolean,
+  query: string,
+  caseSensitive: boolean,
 ): string[] {
   const prefix = selected ? `${ANSI.inverse}› ` : "  ";
   const suffix = selected ? ANSI.reset : "";
+  const resumeStyle = selected ? ANSI.inverse : "";
   const matchesLabel = width >= 88
     ? `${preview.matchCount} ${preview.matchCount === 1 ? "match" : "matches"}`
     : `${preview.matchCount}m`;
-  const title = sanitizeInlineText(preview.title || preview.sessionId);
+  const title = highlightText(
+    sanitizeInlineText(preview.title || preview.sessionId),
+    query,
+    caseSensitive,
+    resumeStyle,
+  );
   const header = truncate(
     `${prefix}${ANSI.dim}[${index + 1}]${ANSI.reset} ${formatShortTimestamp(preview.timestamp)}  ${title}  ${ANSI.dim}${matchesLabel}${ANSI.reset}${suffix}`,
     width,
   );
-  const snippet = sanitizeInlineText(preview.previewSnippet || preview.matchPreviews[0]?.text || "");
+  const snippet = highlightText(
+    sanitizeInlineText(selectPreviewAssistSnippet(preview, query, caseSensitive)),
+    query,
+    caseSensitive,
+    resumeStyle,
+  );
   const body = truncate(`${selected ? `${ANSI.inverse}  ` : "  "}${snippet}${suffix}`, width);
   return [header, body];
+}
+
+function selectPreviewAssistSnippet(
+  preview: SearchSessionGroup,
+  query: string,
+  caseSensitive: boolean,
+): string {
+  const normalizedQuery = caseSensitive ? query : query.toLowerCase();
+  if (normalizedQuery) {
+    for (const candidate of preview.matchPreviews) {
+      const candidateFields = [
+        candidate.text,
+        candidate.secondaryText ?? "",
+        candidate.label,
+      ];
+      if (candidateFields.some((value) => {
+        const haystack = caseSensitive ? value : value.toLowerCase();
+        return haystack.includes(normalizedQuery);
+      })) {
+        return candidate.text || preview.previewSnippet || "";
+      }
+    }
+  }
+
+  return preview.previewSnippet || preview.matchPreviews[0]?.text || "";
 }
 
 function countSessionMatches(
