@@ -10,6 +10,35 @@ npm install -g codex-search
 
 This package installs the `codexs` command.
 
+## Quick Start
+
+TUI first:
+
+```bash
+codexs
+codexs quota
+```
+
+- Bare `codexs` opens the home screen on a TTY
+- `codexs <keyword>` opens the same TUI and starts searching immediately
+- `Enter` opens the selected active thread in Codex Desktop
+- `r` runs `codex resume <session_id>` for the selected active thread
+- Archived matches stay searchable but read-only
+
+Command-line and scripting:
+
+```bash
+codexs quota --json
+codexs quota --jsonl
+codexs lucky quota
+codexs history
+```
+
+- `--json` is for paged machine-readable results
+- `--jsonl` is for streamed machine-readable events
+- `lucky` reopens the newest matching active thread directly
+- `history` shows recent explicit searches
+
 ## Local Development
 
 Run from source:
@@ -103,6 +132,13 @@ Default behavior:
 - Suggests close matches for mistyped commands and flags
 - Shows the `useful` view by default, hiding low-signal protocol and raw tool-call noise
 
+Fast mental model:
+
+- `codexs`: find a thread and jump back into it
+- `codexs lucky`: skip the picker and reopen the newest active match
+- `codexs --json` / `--jsonl`: use the same search engine without the TUI
+- `codexs history`: inspect or manage explicit search history
+
 Shared search flags:
 
 - `--active`: search active sessions only. This is the default.
@@ -134,6 +170,13 @@ Use `--` before the keyword when the keyword itself starts with a dash, for exam
 ## TUI
 
 `codexs` or `codexs <keyword>` opens the interactive picker by default on a TTY.
+
+Common flows:
+
+- Start from the home screen, type a keyword, then press `Enter`
+- Press `o` to open an active thread in Desktop without closing the picker
+- Press `r` to resume the selected active thread in CLI
+- Press `f` to change global source/time/view/case filters for later searches in the same TUI session
 
 Key bindings:
 
