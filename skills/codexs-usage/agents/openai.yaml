@@ -1,0 +1,7 @@
+interface:
+  display_name: "codexs"
+  short_description: "Use codexs to search, reopen, and inspect local Codex thread history"
+  default_prompt: "Use $codexs-usage to help search local Codex thread history with codexs, including the default TUI, JSON output, lucky-open flows, history management, filters, and reopen actions."
+
+policy:
+  allow_implicit_invocation: true

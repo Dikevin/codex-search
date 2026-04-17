@@ -10,6 +10,21 @@ npm install -g codex-search
 
 This package installs the `codexs` command.
 
+## Optional Agent Skill
+
+This repo also maintains an optional agent skill for coding agents that can install `SKILL.md` bundles from GitHub. The skill is not required to run `codexs`; the npm package ships only the CLI runtime.
+
+Any compatible coding agent can install the same `skills/codexs-usage` path from GitHub. If you are using Codex's built-in GitHub skill installer, pin the skill to the same release tag as the CLI you installed:
+
+```bash
+python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
+  --repo Dikevin/codex-search \
+  --path skills/codexs-usage \
+  --ref v0.1.4
+```
+
+Replace `--ref` with the release tag that matches your installed CLI version. Restart or reload your coding agent after installing the skill if it caches available skills.
+
 ## Quick Start
 
 TUI first:
