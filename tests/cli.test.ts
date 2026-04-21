@@ -1,14 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { Writable } from "node:stream";
 import { join } from "node:path";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { promisify } from "node:util";
 
 import { getOpenUrlCandidates, runCli as runCliBase } from "../src/main.js";
 import type { EventLogRecord } from "../src/cli/events-log.js";
 import type { SearchLogRecord } from "../src/cli/search-log.js";
 import { type SearchResultsPage } from "../src/search/session-reader.js";
+
+const execFileAsync = promisify(execFile);
 
 const fixturesDir = join(import.meta.dirname, "fixtures", "codex-home");
 const fixedNow = new Date("2026-04-16T12:00:00.000Z");
@@ -638,6 +642,50 @@ test("runCli prints recorded cwd values for shell completion", async () => {
     "/tmp/project-old-d",
   ]);
   assert.equal(stderr.read(), "");
+});
+
+test("bash completion resolves subcommands and command-specific flags", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+
+  const exitCode = await runCli(["completion", "bash"], {
+    stdout: stdout.stream as NodeJS.WriteStream,
+    stderr: stderr.stream as NodeJS.WriteStream,
+    now: fixedNow,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(stderr.read(), "");
+
+  const tempDir = await mkdtemp(join(tmpdir(), "codexs-completion-"));
+  const completionPath = join(tempDir, "codexs-completion.bash");
+  await writeFile(completionPath, stdout.read());
+
+  const probe = `
+source "${completionPath}"
+run_case() {
+  local label="$1"
+  shift
+  COMP_WORDS=("$@")
+  COMP_CWORD=$(($# - 1))
+  COMPREPLY=()
+  _codexs
+  printf '[%s]\\n' "$label"
+  printf '%s\\n' "\${COMPREPLY[@]}"
+}
+run_case history codexs history ""
+run_case history-flags codexs history --
+run_case completion-flags codexs completion --
+run_case lucky-flags codexs lucky --
+`;
+  const { stdout: completionOutput } = await execFileAsync("bash", ["--noprofile", "--norc", "-c", probe]);
+
+  assert.match(completionOutput, /\[history\]\nclear\nenable\ndisable/);
+  assert.match(completionOutput, /\[history-flags\]\n--help\n--version\n--json\n--root-dir/);
+  assert.doesNotMatch(completionOutput.match(/\[history-flags\][\s\S]*?\[completion-flags\]/)?.[0] ?? "", /\nclear\n/);
+  assert.match(completionOutput, /\[completion-flags\]\n--help\n--version\n--durations\n--cwds/);
+  assert.match(completionOutput, /\[lucky-flags\]\n--help\n--version\n--active\n--archived\n--all/);
+  assert.doesNotMatch(completionOutput.match(/\[lucky-flags\][\s\S]*$/)?.[0] ?? "", /\n--json\n/);
 });
 
 test("runCli rejects invalid completion target", async () => {

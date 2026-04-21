@@ -245,8 +245,8 @@ codexs completion bash > ~/.local/share/bash-completion/completions/codexs
 
 The generated scripts complete:
 
-- commands such as `lucky` and `completion`
-- command-specific flags, so `lucky` does not advertise JSON-only pagination flags
+- commands and `history` actions such as `clear`, `enable`, and `disable`
+- command-specific flags after `-` / `--`, so `lucky` does not advertise JSON-only pagination flags
 - recorded Codex cwd values plus filesystem directories for `-D/--cwd`
 - directory-valued options such as `--root-dir`
 - common `--recent` values by calling back into `codexs completion --durations`
