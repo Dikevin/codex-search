@@ -2,6 +2,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import packageJson from "../../package.json" with { type: "json" };
 import type { SearchLogMode } from "./search-log.js";
 
 export type EventSeverity = "info" | "warn" | "error";
@@ -26,6 +27,7 @@ export type EventName =
 
 export interface EventLogRecord {
   version: 1;
+  codexsVersion?: string;
   type: "event";
   time: string;
   severity: EventSeverity;
@@ -47,7 +49,7 @@ export async function appendEventLog(
 
   try {
     await mkdir(dirname(logPath), { recursive: true });
-    await appendFile(logPath, `${JSON.stringify(record)}\n`, "utf8");
+    await appendFile(logPath, `${JSON.stringify(withCodexsVersion(record))}\n`, "utf8");
   } catch {
     // Event logging is best-effort.
   }
@@ -55,4 +57,11 @@ export async function appendEventLog(
 
 export function getEventLogPath(codexHomeDir: string | null | undefined): string {
   return join(codexHomeDir ?? join(homedir(), ".codex"), EVENT_LOG_DIR, EVENT_LOG_NAME);
+}
+
+function withCodexsVersion(record: EventLogRecord): EventLogRecord {
+  return {
+    ...record,
+    codexsVersion: packageJson.version,
+  };
 }

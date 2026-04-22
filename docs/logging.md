@@ -28,6 +28,7 @@ Each line is a `SearchLogRecord`.
 ```json
 {
   "version": 1,
+  "codexsVersion": "0.1.5",
   "type": "search",
   "startedAt": "2026-04-16T01:00:00.000Z",
   "endedAt": "2026-04-16T01:00:01.000Z",
@@ -90,6 +91,7 @@ Each line is an `EventLogRecord`.
 ```json
 {
   "version": 1,
+  "codexsVersion": "0.1.5",
   "type": "event",
   "time": "2026-04-16T01:00:01.000Z",
   "severity": "info",

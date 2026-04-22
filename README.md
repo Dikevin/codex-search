@@ -301,6 +301,8 @@ JSONL mode is not paginated and does not support `--page`, `--page-size`, `--lim
 - `searches.jsonl`: explicit search history that powers `recent` suggestions
 - `events.jsonl`: explicit actions plus warnings and errors
 
+Both JSONL files include `codexsVersion`, so old runs can be compared against the CLI build that produced them.
+
 `searches.jsonl` records:
 
 - query, mode, source/view/time/cwd flags

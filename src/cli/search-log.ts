@@ -2,6 +2,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import packageJson from "../../package.json" with { type: "json" };
 import type { JsonlSearchProgress } from "./output.js";
 import type { SearchSource } from "../search/session-reader.js";
 import type { SearchViewMode } from "../search/view-filter.js";
@@ -39,6 +40,7 @@ export interface SearchLogResults {
 
 export interface SearchLogRecord {
   version: 1;
+  codexsVersion?: string;
   type: "search";
   startedAt: string;
   endedAt: string;
@@ -64,7 +66,7 @@ export async function appendSearchLog(
 
   try {
     await mkdir(dirname(logPath), { recursive: true });
-    await appendFile(logPath, `${JSON.stringify(record)}\n`, "utf8");
+    await appendFile(logPath, `${JSON.stringify(withCodexsVersion(record))}\n`, "utf8");
   } catch {
     // Search logging is best-effort and must not break search itself.
   }
@@ -72,4 +74,11 @@ export async function appendSearchLog(
 
 export function getSearchLogPath(codexHomeDir: string | null | undefined): string {
   return join(codexHomeDir ?? join(homedir(), ".codex"), SEARCH_LOG_DIR, SEARCH_LOG_NAME);
+}
+
+function withCodexsVersion(record: SearchLogRecord): SearchLogRecord {
+  return {
+    ...record,
+    codexsVersion: packageJson.version,
+  };
 }
