@@ -42,6 +42,7 @@ This file contains repository-stable engineering constraints for agents.
 - For packaging changes, run `npm pack --dry-run`.
 - Treat `README.md` and `skills/*` as user-facing onboarding material for coding agents, not runtime requirements.
 - If a change affects user-visible commands, flags, output, TUI interaction, or packaging expectations, update `README.md` and any affected agent-skill files in the same change.
+- Keep this file focused on repo-stable search and TUI contract; move troubleshooting walkthroughs, comparison notes, and long operational details into `docs/` or `skills/`.
 - Do not add unit tests that only mirror static configuration, hard-coded option lists, or generated shell-completion text. Prefer behavior tests for parsing, search, output shape, dynamic completion data, and TUI interaction.
 - Automated tests and real self-tests must run against cloned temporary Codex history state. Never point them at the operator's real `~/.codex` sessions, archived sessions, title/state sqlite files, or live Codex TUI processes.
 - Prefer copying only the runtime artifacts needed for the scenario into a temp `HOME` or temp codex root, then exercise the real CLI against that clone.
